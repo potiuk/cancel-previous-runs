@@ -34,14 +34,53 @@ function createRunsQuery(
   return octokit.actions.listWorkflowRuns.endpoint.merge(request)
 }
 
+function createJobsForWorkflowRunQuery(
+    octokit: github.GitHub,
+    owner: string,
+    repo: string,
+    runId: string,
+): Octokit.RequestOptions {
+  const request = {
+            owner,
+            repo,
+            runId: runId,
+          }
+  return octokit.actions.listJobsForWorkflowRun.endpoint.merge(request)
+}
+
+async function cancelFailedJobs(
+    octokit: github.GitHub,
+    owner: string,
+    repo: string,
+    runId: string,
+    cancelLastRunOnFailedJobs: string[]
+): Promise<void> {
+  const listJobs = createJobsForWorkflowRunQuery(
+      octokit,
+      owner,
+      repo,
+      runId,
+  )
+  for await (const item of octokit.paginate.iterator(listJobs)) {
+    for (const job of item.data.jobs) {
+      if (job.conclusion == 'failure' && cancelLastRunOnFailedJobs.includes(job.name)) {
+        core.info(`Job ${job.name} failed in run id ${runId} and it is in ${cancelLastRunOnFailedJobs}`)
+        core.info(`Cancelling the whole ${runId}`)
+        await cancelRun(octokit, owner, repo, runId)
+      }
+    }
+  }
+}
+
 async function cancelDuplicates(
-  token: string,
-  selfRunId: string,
-  owner: string,
-  repo: string,
-  workflowId?: string,
-  branch?: string,
-  event?: string
+    token: string,
+    selfRunId: string,
+    owner: string,
+    repo: string,
+    workflowId?: string,
+    branch?: string,
+    event?: string,
+    cancelLastRunOnFailedJobs?: string[]
 ): Promise<void> {
   const octokit = new github.GitHub(token)
 
@@ -120,6 +159,11 @@ async function cancelDuplicates(
     const head = `${element.head_repository.full_name}/${element.head_branch}`
     if (!heads.has(head)) {
       core.info(`First: ${head}`)
+      // In case this is the first run and we also cancel on failed jobs (and one of those jobs failed)
+      // We should also cancel that build
+      if (cancelLastRunOnFailedJobs !== undefined) {
+        await cancelFailedJobs(octokit, owner, repo, element.id, cancelLastRunOnFailedJobs)
+      }
       heads.add(head)
       continue
     }
@@ -149,7 +193,10 @@ async function run(): Promise<void> {
       if (!(workflowId.length > 0)) {
         throw new Error('Workflow must be specified for schedule event type')
       }
-      await cancelDuplicates(token, selfRunId, owner, repo, workflowId)
+      const cancelLastRunOnFailedJobs =
+          JSON.parse(core.getInput('cancelLastRunOnFailedJobs'))
+
+      await cancelDuplicates(token, selfRunId, owner, repo, workflowId, cancelLastRunOnFailedJobs)
       return
     }
 
@@ -175,15 +222,7 @@ async function run(): Promise<void> {
       `Branch is ${branch}, repo is ${repo}, and owner is ${owner}, and id is ${selfRunId}`
     )
 
-    cancelDuplicates(
-      token,
-      selfRunId,
-      owner,
-      repo,
-      undefined,
-      branch,
-      eventName
-    )
+    cancelDuplicates(token, selfRunId, owner, repo, undefined, branch, eventName)
   } catch (error) {
     core.setFailed(error.message)
   }
