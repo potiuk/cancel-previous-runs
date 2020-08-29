@@ -1466,7 +1466,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const github = __importStar(__webpack_require__(469));
 const core = __importStar(__webpack_require__(393));
 const treemap = __importStar(__webpack_require__(706));
-const CANCELLABLE_RUNS = ['push', 'pull_request', 'workflow_run', 'schedule'];
+const CANCELLABLE_RUNS = ['push', 'pull_request', 'workflow_run', 'schedule', 'workflow_dispatch'];
 var CancelMode;
 (function (CancelMode) {
     CancelMode["DUPLICATES"] = "duplicates";
