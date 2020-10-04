@@ -321,6 +321,7 @@ async function cancelRun(
 
 async function findAndCancelRuns(
   octokit: github.GitHub,
+  selfRunId: number,
   sourceWorkflowId: number,
   sourceRunId: number,
   owner: string,
@@ -329,7 +330,10 @@ async function findAndCancelRuns(
   headBranch: string,
   sourceEventName: string,
   cancelMode: CancelMode,
-  jobNameRegexps: string[]
+  notifyPRCancel: boolean,
+  notifyPRMessageStart: string,
+  jobNameRegexps: string[],
+  reason: string
 ): Promise<number[]> {
   const statusValues = ['queued', 'in_progress']
   const workflowRuns = await getWorkflowRuns(
@@ -388,6 +392,7 @@ async function findAndCancelRuns(
     }
   )
   const idsToCancel: number[] = []
+  const pullRequestToNotify: number[] = []
   for (const [key, runItem] of workflowRuns) {
     core.info(
       `\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status}\n`
@@ -404,6 +409,19 @@ async function findAndCancelRuns(
         jobNameRegexps
       )
     ) {
+      if (notifyPRCancel && runItem.event === 'pull_request') {
+        const pullRequest = await findPullRequest(
+          octokit,
+          owner,
+          repo,
+          runItem.head_repository.owner.login,
+          runItem.head_branch,
+          runItem.head_sha
+        )
+        if (pullRequest) {
+          pullRequestToNotify.push(pullRequest.number)
+        }
+      }
       idsToCancel.push(runItem.id)
     }
   }
@@ -412,11 +430,22 @@ async function findAndCancelRuns(
   if (sortedIdsToCancel.length > 0) {
     core.info(
       '\n######  Cancelling runs starting from the oldest  ##########\n' +
-        `\n     Runs to cancel: ${sortedIdsToCancel.length}\n`
+        `\n     Runs to cancel: ${sortedIdsToCancel.length}\n` +
+        `\n     PRs to notify: ${pullRequestToNotify.length}\n`
     )
     for (const runId of sortedIdsToCancel) {
       core.info(`\nCancelling run: ${runId}.\n`)
       await cancelRun(octokit, owner, repo, runId)
+    }
+    for (const pullRequestNumber of pullRequestToNotify) {
+      const selfWorkflowRunUrl = `https://github.com/${owner}/${repo}/actions/runs/${selfRunId}`
+      await addCommentToPullRequest(
+        octokit,
+        owner,
+        repo,
+        pullRequestNumber,
+        `[The Build Workflow run](${selfWorkflowRunUrl}) is cancelling this PR. ${reason}`
+      )
     }
     core.info(
       '\n######  Finished cancelling runs                  ##########\n'
@@ -438,12 +467,61 @@ function getRequiredEnv(key: string): string {
   return value
 }
 
+async function addCommentToPullRequest(
+  octokit: github.GitHub,
+  owner: string,
+  repo: string,
+  pullRequestNumber: number,
+  comment: string
+): Promise<void> {
+  core.info(`\nNotifying PR: ${pullRequestNumber} with '${comment}'.\n`)
+  await octokit.issues.createComment({
+    owner,
+    repo,
+    // eslint-disable-next-line @typescript-eslint/camelcase
+    issue_number: pullRequestNumber,
+    body: comment
+  })
+}
+
+async function findPullRequest(
+  octokit: github.GitHub,
+  owner: string,
+  repo: string,
+  headRepo: string,
+  headBranch: string,
+  headSha: string
+): Promise<rest.PullsListResponseItem | null> {
+  // Finds Pull request for this workflow run
+  core.info(
+    `\nFinding PR request id for: owner: ${owner}, Repo:${repo}, Head:${headRepo}:${headBranch}.\n`
+  )
+  const pullRequests = await octokit.pulls.list({
+    owner,
+    repo,
+    head: `${headRepo}:${headBranch}`
+  })
+  for (const pullRequest of pullRequests.data) {
+    core.info(
+      `\nComparing: ${pullRequest.number} sha: ${pullRequest.head.sha} with expected: ${headSha}.\n`
+    )
+    if (pullRequest.head.sha === headSha) {
+      core.info(`\nFound PR: ${pullRequest.number}\n`)
+      return pullRequest
+    }
+  }
+  core.info(`\nCould not find the PR for this build :(\n`)
+  return null
+}
+
 async function getOrigin(
   octokit: github.GitHub,
   runId: number,
   owner: string,
   repo: string
-): Promise<[string, string, string, string]> {
+): Promise<
+  [string, string, string, string, string, rest.PullsListResponseItem | null]
+> {
   const reply = await octokit.actions.getWorkflowRun({
     owner,
     repo,
@@ -456,16 +534,31 @@ async function getOrigin(
       `Head branch: ${sourceRun.head_branch} ` +
       `Event: ${sourceRun.event}, Head sha: ${sourceRun.head_sha}, url: ${sourceRun.url}`
   )
+  let pullRequest: rest.PullsListResponseItem | null = null
+  if (sourceRun.event === 'pull_request') {
+    pullRequest = await findPullRequest(
+      octokit,
+      owner,
+      repo,
+      sourceRun.head_repository.owner.login,
+      sourceRun.head_branch,
+      sourceRun.head_sha
+    )
+  }
+
   return [
     reply.data.head_repository.full_name,
     reply.data.head_branch,
     reply.data.event,
-    reply.data.head_sha
+    reply.data.head_sha,
+    pullRequest ? pullRequest.merge_commit_sha : '',
+    pullRequest
   ]
 }
 
 async function performCancelJob(
   octokit: github.GitHub,
+  selfRunId: number,
   sourceWorkflowId: number,
   sourceRunId: number,
   owner: string,
@@ -474,6 +567,8 @@ async function performCancelJob(
   headBranch: string,
   sourceEventName: string,
   cancelMode: CancelMode,
+  notifyPRCancel: boolean,
+  notifyPRMessageStart: string,
   jobNameRegexps: string[]
 ): Promise<number[]> {
   core.info(
@@ -487,22 +582,27 @@ async function performCancelJob(
   core.info(
     '\n###################################################################################\n'
   )
+  let reason = ''
   if (cancelMode === CancelMode.SELF) {
     core.info(
       `# Cancelling source run: ${sourceRunId} for workflow ${sourceWorkflowId}.`
     )
+    reason = `The job has been cancelled by another workflow.`
   } else if (cancelMode === CancelMode.FAILED_JOBS) {
     core.info(
       `# Cancel all runs for workflow ${sourceWorkflowId} where job names matching ${jobNameRegexps} failed.`
     )
+    reason = `It has some failed jobs matching ${jobNameRegexps}.`
   } else if (cancelMode === CancelMode.NAMED_JOBS) {
     core.info(
       `# Cancel all runs for workflow ${sourceWorkflowId} have job names matching ${jobNameRegexps}.`
     )
+    reason = `It has jobs matching ${jobNameRegexps}.`
   } else if (cancelMode === CancelMode.DUPLICATES) {
     core.info(
       `# Cancel duplicate runs started before ${sourceRunId} for workflow ${sourceWorkflowId}.`
     )
+    reason = `It in earlier duplicate of ${sourceWorkflowId} run.`
   } else {
     throw Error(`Wrong cancel mode ${cancelMode}! This should never happen.`)
   }
@@ -512,6 +612,7 @@ async function performCancelJob(
 
   return await findAndCancelRuns(
     octokit,
+    selfRunId,
     sourceWorkflowId,
     sourceRunId,
     owner,
@@ -520,8 +621,16 @@ async function performCancelJob(
     headBranch,
     sourceEventName,
     cancelMode,
-    jobNameRegexps
+    notifyPRCancel,
+    notifyPRMessageStart,
+    jobNameRegexps,
+    reason
   )
+}
+
+function verboseOutput(name: string, value: string): void {
+  core.info(`Setting output: ${name}: ${value}`)
+  core.setOutput(name, value)
 }
 
 async function run(): Promise<void> {
@@ -532,6 +641,9 @@ async function run(): Promise<void> {
   const eventName = getRequiredEnv('GITHUB_EVENT_NAME')
   const cancelMode =
     (core.getInput('cancelMode') as CancelMode) || CancelMode.DUPLICATES
+  const notifyPRCancel =
+    (core.getInput('notifyPRCancel') || 'false').toLowerCase() === 'true'
+  const notifyPRMessageStart = core.getInput('notifyPRMessageStart')
   const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId
   const jobNameRegexpsString = core.getInput('jobNameRegexps')
   const jobNameRegexps = jobNameRegexpsString
@@ -577,20 +689,40 @@ async function run(): Promise<void> {
       )
   }
 
-  const [headRepo, headBranch, sourceEventName, headSha] = await getOrigin(
-    octokit,
-    sourceRunId,
-    owner,
-    repo
-  )
+  const [
+    headRepo,
+    headBranch,
+    sourceEventName,
+    headSha,
+    mergeCommitSha,
+    pullRequest
+  ] = await getOrigin(octokit, sourceRunId, owner, repo)
 
-  core.setOutput('sourceHeadRepo', headRepo)
-  core.setOutput('sourceHeadBranch', headBranch)
-  core.setOutput('sourceHeadSha', headSha)
-  core.setOutput('sourceEvent', sourceEventName)
+  verboseOutput('sourceHeadRepo', headRepo)
+  verboseOutput('sourceHeadBranch', headBranch)
+  verboseOutput('sourceHeadSha', headSha)
+  verboseOutput('sourceEvent', sourceEventName)
+  verboseOutput(
+    'pullRequestNumber',
+    pullRequest ? pullRequest.number.toString() : ''
+  )
+  verboseOutput('mergeCommitSha', mergeCommitSha)
+  verboseOutput('targetCommitSha', pullRequest ? mergeCommitSha : headSha)
+
+  const selfWorkflowRunUrl = `https://github.com/${owner}/${repo}/actions/runs/${selfRunId}`
+  if (notifyPRMessageStart && pullRequest) {
+    await octokit.issues.createComment({
+      owner,
+      repo,
+      // eslint-disable-next-line @typescript-eslint/camelcase
+      issue_number: pullRequest.number,
+      body: `${notifyPRMessageStart} [The workflow run](${selfWorkflowRunUrl})`
+    })
+  }
 
   const cancelledRuns = await performCancelJob(
     octokit,
+    selfRunId,
     sourceWorkflowId,
     sourceRunId,
     owner,
@@ -599,6 +731,8 @@ async function run(): Promise<void> {
     headBranch,
     sourceEventName,
     cancelMode,
+    notifyPRCancel,
+    notifyPRMessageStart,
     jobNameRegexps
   )
 

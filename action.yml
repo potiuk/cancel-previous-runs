@@ -11,6 +11,16 @@ inputs:
       `$\{\{ github.event.workflow_run.id` variable \}\}` if used in `workflow_run` triggered run if
       you want to act on source workflow rather than the triggered run.
     required: false
+  notifyPRCancel:
+    description: |
+      Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why
+      they are being cancelled.
+    required: false
+  notifyPRMessageStart:
+    description: |
+      Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the
+      message specified at the start of the workflow - adding the link to the triggered workflow_run.
+    required: false
   cancelMode:
     description: |
       The mode of cancel. One of:

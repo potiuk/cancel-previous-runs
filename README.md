@@ -69,6 +69,14 @@ resolved during execution of the workflow using information about the linked wor
 at the workflow runtime. Hopefully this information will soon be available in GitHub Actions allowing
 removal of `namedJobs` cancel mode and simplifying the examples and workflows using the Action.
 
+Another feature of the Action is to notify the PRs linked to the workflows. Normally when workflows
+get cancelled there is no information why it happens, but this action can add an explanatory comment
+to the PR if the PR gets cancelled. This is controlled by `notifyPRCancel` boolean input.
+
+Also, for the `workflow_run` events, GitHub does not yet provide an easy interface linking the original
+Pull Request and the Workflow_run. You can ask the CancelWorkflowRun action to add extra comment to the PR
+adding explanatory message followed by a link to the `workflow_run` run.
+
 You can take a look at the description provided in the
 [Apache Airflow's CI](https://github.com/apache/airflow/blob/master/CI.rst) and
 [the workflows](https://github.com/apache/airflow/blob/master/.github/workflows)
@@ -97,12 +105,14 @@ and `schedule` events are no longer needed.
 
 ## Inputs
 
-| Input            | Required | Default      | Comment                                                                                                                                                                                                          |
-|------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `token`          | yes      |              | The github token passed from `${{ secrets.GITHUB_TOKEN }}`                                                                                                                                                       |
-| `cancelMode`     | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `self`, `failedJobs`, `namedJobs`                                                                                                             |
-| `sourceRunId`    | no       |              | Useful only in `workflow_run` triggered events. It should be set to the id of the workflow triggering the run `${{ github.event.workflow_run.id }}`  in case cancel operation should cancel the source workflow. |
-| `jobNameRegexps` | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
+| Input                  | Required | Default      | Comment                                                                                                                                                                                                          |
+|------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `token`                | yes      |              | The github token passed from `${{ secrets.GITHUB_TOKEN }}`                                                                                                                                                       |
+| `cancelMode`           | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `self`, `failedJobs`, `namedJobs`                                                                                                             |
+| `sourceRunId`          | no       |              | Useful only in `workflow_run` triggered events. It should be set to the id of the workflow triggering the run `${{ github.event.workflow_run.id }}`  in case cancel operation should cancel the source workflow. |
+| `notifyPRCancel`       | no       |              | Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why they are being cancelled.                                                                                            |
+| `notifyPRMessageStart` | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
+| `jobNameRegexps`       | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
 
 The job cancel modes work as follows:
 
@@ -116,13 +126,16 @@ The job cancel modes work as follows:
 
 ## Outputs
 
-| Output             | No `sourceRunId` specified                   | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                                      |
-|--------------------|----------------------------------------------|-----------------------------------------------------------------------------------------------------|
-| `sourceHeadRepo`   | Current repository. Format: `owner/repo`     | Repository of the run that triggered this `workflow_run`. Format: `owner/repo`                      |
-| `sourceHeadBranch` | Current branch.                              | Branch of the run that triggered this `workflow_run`. Might be forked repo, if it is a pull_requst. |
-| `sourceHeadSha`    | Current commit SHA: `{{ github.sha }}`       | Commit sha of the run that triggered this `workflow_run`.                                           |
-| `sourceEvent`      | Current event: ``${{ github.event }}``       | Event of the run that triggered this `workflow_run`                                                 |
-| `cancelledRuns`    | JSON-stringified array of cancelled run ids. | JSON-stringified array of cancelled run ids.                                                        |
+| Output              | No `sourceRunId` specified                              | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                                       |
+|---------------------|---------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `sourceHeadRepo`    | Current repository. Format: `owner/repo`                | Repository of the run that triggered this `workflow_run`. Format: `owner/repo`                       |
+| `sourceHeadBranch`  | Current branch.                                         | Branch of the run that triggered this `workflow_run`. Might be forked repo, if it is a pull_request. |
+| `sourceHeadSha`     | Current commit SHA: `{{ github.sha }}`                  | Commit sha of the run that triggered this `workflow_run`.                                            |
+| `mergeCommitSha`    | Merge commit SHA if PR-triggered event.                 | Merge commit SHA if PR-triggered event.                                                              |
+| `targetCommitSha`   | Target commit SHA (merge if present, otherwise source). | Target commit SHA (merge if present, otherwise source).                                              |
+| `pullRequestNumber` | Number of the associated Pull Request (if PR triggered) | Number of the associated Pull Request (if PR triggered)                                              |
+| `sourceEvent`       | Current event: ``${{ github.event }}``                  | Event of the run that triggered this `workflow_run`                                                  |
+| `cancelledRuns`     | JSON-stringified array of cancelled run ids.            | JSON-stringified array of cancelled run ids.                                                         |
 
 # Examples
 
@@ -149,7 +162,8 @@ Cancels past runs for the same workflow (with the same branch).
 
 In the case below, any of the direct "push" events will cancel all past runs for the same branch as the
 one being pushed. However, it can be configured for "pull_request" (in the same repository) or "schedule"
-type of events as well.
+type of events as well. It will also notify the PR with the comment containining why it has been
+cancelled.
 
 ```yaml
 name: CI
@@ -163,7 +177,7 @@ jobs:
         name: "Cancel duplicate workflow runs"
         with:
           cancelMode: duplicates
-          token: ${{ secrets.GITHUB_TOKEN }}
+          notifyPRCancel: true
 ```
 
 ### Cancel "self" workflow run
@@ -186,7 +200,7 @@ jobs:
         with:
           cancelMode: self
           token: ${{ secrets.GITHUB_TOKEN }}
-
+          notifyPRCancel: true
 ```
 
 ### Fail-fast workflow runs with failed jobs
@@ -214,6 +228,7 @@ jobs:
           cancelMode: failedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
+          notifyPRCancel: true
 ```
 
 ### Cancel all runs with named jobs
@@ -245,6 +260,7 @@ jobs:
           cancelMode: namedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
+          notifyPRCancel: true
 ```
 
 ## Repositories that use Pull Requests from forks
@@ -304,6 +320,7 @@ jobs:
           cancelMode: duplicates
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
+          notifyPRCancel: true
 ```
 
 Note that `duplicate` cancel mode cannot be used for `workflow_run` type of event without `sourceId` input.
@@ -362,11 +379,18 @@ jobs:
         with:
           cancelMode: duplicates
           token: ${{ secrets.GITHUB_TOKEN }}
+          notifyPRCancel: true
+          notifyPRMessageStart: |
+            Note! The Docker Images for the build are prepared in a separate workflow,
+            that you will not see in the list of checks.
+
+            You can checks the status of those images in:
       - uses: potiuk/cancel-workflow-runs@v2
         name: "Cancel duplicate Cancelling runs"
         with:
           cancelMode: namedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
+          notifyPRCancel: true
           jobNameRegexps: >
             ["Build info
             repo: ${{ steps.cancel.outputs.sourceHeadRepo }}
@@ -414,6 +438,7 @@ on:
         uses: potiuk/cancel-workflow-runs@v2
         with:
           cancelMode: self
+          notifyPRCancel: true
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
 ```
@@ -441,6 +466,7 @@ on:
         uses: potiuk/cancel-workflow-runs@v2
         with:
           cancelMode: self
+          notifyPRCancel: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
 ```
@@ -476,6 +502,7 @@ jobs:
           cancelMode: failedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
+          notifyPRCancel: true
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
 ```
 
@@ -517,6 +544,7 @@ jobs:
           cancelMode: failedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
+          notifyPRCancel: true
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
       - name: "Extract canceled failed runs"
         id: extract-cancelled-failed-runs
@@ -536,6 +564,7 @@ jobs:
         with:
           cancelMode: namedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
+          notifyPRCancel: true
           jobNameRegexps: ${{ steps.extract-cancelled-failed.runs.matching-regexp }}
 
 ```
