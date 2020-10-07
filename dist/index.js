@@ -1756,7 +1756,7 @@ function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, ow
             }
             for (const pullRequestNumber of pullRequestToNotify) {
                 const selfWorkflowRunUrl = `https://github.com/${owner}/${repo}/actions/runs/${selfRunId}`;
-                yield addCommentToPullRequest(octokit, owner, repo, pullRequestNumber, `[The Build Workflow run](${selfWorkflowRunUrl}) is cancelling this PR. ${reason}`);
+                yield addCommentToPullRequest(octokit, owner, repo, pullRequestNumber, `[The Workflow run](${selfWorkflowRunUrl}) is cancelling this PR. ${reason}`);
             }
             core.info('\n######  Finished cancelling runs                  ##########\n');
         }
@@ -1832,7 +1832,7 @@ function getOrigin(octokit, runId, owner, repo) {
         ];
     });
 }
-function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps) {
+function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps) {
     return __awaiter(this, void 0, void 0, function* () {
         core.info('\n###################################################################################\n');
         core.info(`All parameters: owner: ${owner}, repo: ${repo}, run id: ${sourceRunId}, ` +
@@ -1842,7 +1842,9 @@ function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, own
         let reason = '';
         if (cancelMode === CancelMode.SELF) {
             core.info(`# Cancelling source run: ${sourceRunId} for workflow ${sourceWorkflowId}.`);
-            reason = `The job has been cancelled by another workflow.`;
+            reason = notifyPRCancelMessage
+                ? notifyPRCancelMessage
+                : `The job has been cancelled by another workflow.`;
         }
         else if (cancelMode === CancelMode.FAILED_JOBS) {
             core.info(`# Cancel all runs for workflow ${sourceWorkflowId} where job names matching ${jobNameRegexps} failed.`);
@@ -1876,6 +1878,7 @@ function run() {
         const eventName = getRequiredEnv('GITHUB_EVENT_NAME');
         const cancelMode = core.getInput('cancelMode') || CancelMode.DUPLICATES;
         const notifyPRCancel = (core.getInput('notifyPRCancel') || 'false').toLowerCase() === 'true';
+        const notifyPRCancelMessage = core.getInput('notifyPRCancelMessage');
         const notifyPRMessageStart = core.getInput('notifyPRMessageStart');
         const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId;
         const jobNameRegexpsString = core.getInput('jobNameRegexps');
@@ -1923,8 +1926,8 @@ function run() {
                 body: `${notifyPRMessageStart} [The workflow run](${selfWorkflowRunUrl})`
             });
         }
-        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps);
-        core.setOutput('cancelledRuns', JSON.stringify(cancelledRuns));
+        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps);
+        verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns));
     });
 }
 run()

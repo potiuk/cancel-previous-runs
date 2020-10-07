@@ -444,7 +444,7 @@ async function findAndCancelRuns(
         owner,
         repo,
         pullRequestNumber,
-        `[The Build Workflow run](${selfWorkflowRunUrl}) is cancelling this PR. ${reason}`
+        `[The Workflow run](${selfWorkflowRunUrl}) is cancelling this PR. ${reason}`
       )
     }
     core.info(
@@ -568,6 +568,7 @@ async function performCancelJob(
   sourceEventName: string,
   cancelMode: CancelMode,
   notifyPRCancel: boolean,
+  notifyPRCancelMessage: string,
   notifyPRMessageStart: string,
   jobNameRegexps: string[]
 ): Promise<number[]> {
@@ -587,7 +588,9 @@ async function performCancelJob(
     core.info(
       `# Cancelling source run: ${sourceRunId} for workflow ${sourceWorkflowId}.`
     )
-    reason = `The job has been cancelled by another workflow.`
+    reason = notifyPRCancelMessage
+      ? notifyPRCancelMessage
+      : `The job has been cancelled by another workflow.`
   } else if (cancelMode === CancelMode.FAILED_JOBS) {
     core.info(
       `# Cancel all runs for workflow ${sourceWorkflowId} where job names matching ${jobNameRegexps} failed.`
@@ -643,6 +646,7 @@ async function run(): Promise<void> {
     (core.getInput('cancelMode') as CancelMode) || CancelMode.DUPLICATES
   const notifyPRCancel =
     (core.getInput('notifyPRCancel') || 'false').toLowerCase() === 'true'
+  const notifyPRCancelMessage = core.getInput('notifyPRCancelMessage')
   const notifyPRMessageStart = core.getInput('notifyPRMessageStart')
   const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId
   const jobNameRegexpsString = core.getInput('jobNameRegexps')
@@ -732,11 +736,12 @@ async function run(): Promise<void> {
     sourceEventName,
     cancelMode,
     notifyPRCancel,
+    notifyPRCancelMessage,
     notifyPRMessageStart,
     jobNameRegexps
   )
 
-  core.setOutput('cancelledRuns', JSON.stringify(cancelledRuns))
+  verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns))
 }
 
 run()

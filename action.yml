@@ -16,6 +16,10 @@ inputs:
       Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why
       they are being cancelled.
     required: false
+  notifyPRCancelMessage:
+    description: |
+      Optional cancel message to use instead of the default one when notifyPRCancel is true.
+    required: false
   notifyPRMessageStart:
     description: |
       Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the
