@@ -18,7 +18,8 @@ inputs:
     required: false
   notifyPRCancelMessage:
     description: |
-      Optional cancel message to use instead of the default one when notifyPRCancel is true.
+      Optional cancel message to use instead of the default one when notifyPRCancel is true. Only
+      used in 'self' cancel mode.
     required: false
   notifyPRMessageStart:
     description: |
