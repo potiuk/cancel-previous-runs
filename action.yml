@@ -41,6 +41,11 @@ inputs:
       Array of job name regexps (JSON-encoded string). Used by `failedJobs` and `namedJobs` cancel modes
       to match job names of workflow runs.
     required: false
+  skipEventTypes:
+    description: |
+      Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used
+      in order to skip direct pushes or scheduled events.
+    required: false
 runs:
   using: 'node12'
   main: 'dist/index.js'

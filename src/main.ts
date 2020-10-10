@@ -204,7 +204,8 @@ async function shouldBeCancelled(
   headRepo: string,
   cancelMode: CancelMode,
   sourceRunId: number,
-  jobNamesRegexps: string[]
+  jobNamesRegexps: string[],
+  skipEventTypes: string[]
 ): Promise<boolean> {
   if ('completed' === runItem.status.toString()) {
     core.info(`\nThe run ${runItem.id} is completed. Not cancelling it.\n`)
@@ -213,6 +214,13 @@ async function shouldBeCancelled(
   if (!CANCELLABLE_RUNS.includes(runItem.event.toString())) {
     core.info(
       `\nThe run ${runItem.id} is (${runItem.event} event - not in ${CANCELLABLE_RUNS}). Not cancelling it.\n`
+    )
+    return false
+  }
+  if (skipEventTypes.includes(runItem.event.toString())) {
+    core.info(
+      `\nThe run ${runItem.id} is (${runItem.event} event - ` +
+        `it is in skipEventTypes ${skipEventTypes}). Not cancelling it.\n`
     )
     return false
   }
@@ -333,6 +341,7 @@ async function findAndCancelRuns(
   notifyPRCancel: boolean,
   notifyPRMessageStart: string,
   jobNameRegexps: string[],
+  skipEventTypes: string[],
   reason: string
 ): Promise<number[]> {
   const statusValues = ['queued', 'in_progress']
@@ -406,7 +415,8 @@ async function findAndCancelRuns(
         headRepo,
         cancelMode,
         sourceRunId,
-        jobNameRegexps
+        jobNameRegexps,
+        skipEventTypes
       )
     ) {
       if (notifyPRCancel && runItem.event === 'pull_request') {
@@ -570,7 +580,8 @@ async function performCancelJob(
   notifyPRCancel: boolean,
   notifyPRCancelMessage: string,
   notifyPRMessageStart: string,
-  jobNameRegexps: string[]
+  jobNameRegexps: string[],
+  skipEventTypes: string[]
 ): Promise<number[]> {
   core.info(
     '\n###################################################################################\n'
@@ -627,6 +638,7 @@ async function performCancelJob(
     notifyPRCancel,
     notifyPRMessageStart,
     jobNameRegexps,
+    skipEventTypes,
     reason
   )
 }
@@ -653,10 +665,17 @@ async function run(): Promise<void> {
   const jobNameRegexps = jobNameRegexpsString
     ? JSON.parse(jobNameRegexpsString)
     : []
+
+  const skipEventTypesString = core.getInput('skipEventTypes')
+  const skipEventTypes = skipEventTypesString
+    ? JSON.parse(skipEventTypesString)
+    : []
+
   const [owner, repo] = repository.split('/')
 
   core.info(
-    `\nGetting workflow id for source run id: ${sourceRunId}, owner: ${owner}, repo: ${repo}\n`
+    `\nGetting workflow id for source run id: ${sourceRunId}, owner: ${owner}, repo: ${repo},` +
+      ` skipEventTypes: ${skipEventTypes}\n`
   )
   const sourceWorkflowId = await getWorkflowId(
     octokit,
@@ -738,7 +757,8 @@ async function run(): Promise<void> {
     notifyPRCancel,
     notifyPRCancelMessage,
     notifyPRMessageStart,
-    jobNameRegexps
+    jobNameRegexps,
+    skipEventTypes
   )
 
   verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns))
