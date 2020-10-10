@@ -1622,7 +1622,7 @@ function getWorkflowRuns(octokit, statusValues, cancelMode, createListRunQuery) 
         return workflowRuns;
     });
 }
-function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNamesRegexps) {
+function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNamesRegexps, skipEventTypes) {
     return __awaiter(this, void 0, void 0, function* () {
         if ('completed' === runItem.status.toString()) {
             core.info(`\nThe run ${runItem.id} is completed. Not cancelling it.\n`);
@@ -1630,6 +1630,11 @@ function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, 
         }
         if (!CANCELLABLE_RUNS.includes(runItem.event.toString())) {
             core.info(`\nThe run ${runItem.id} is (${runItem.event} event - not in ${CANCELLABLE_RUNS}). Not cancelling it.\n`);
+            return false;
+        }
+        if (skipEventTypes.includes(runItem.event.toString())) {
+            core.info(`\nThe run ${runItem.id} is (${runItem.event} event - ` +
+                `it is in skipEventTypes ${skipEventTypes}). Not cancelling it.\n`);
             return false;
         }
         if (cancelMode === CancelMode.FAILED_JOBS) {
@@ -1705,7 +1710,7 @@ function cancelRun(octokit, owner, repo, runId) {
         }
     });
 }
-function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, reason) {
+function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason) {
     return __awaiter(this, void 0, void 0, function* () {
         const statusValues = ['queued', 'in_progress'];
         const workflowRuns = yield getWorkflowRuns(octokit, statusValues, cancelMode, function (status) {
@@ -1734,7 +1739,7 @@ function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, ow
         const pullRequestToNotify = [];
         for (const [key, runItem] of workflowRuns) {
             core.info(`\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status}\n`);
-            if (yield shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNameRegexps)) {
+            if (yield shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNameRegexps, skipEventTypes)) {
                 if (notifyPRCancel && runItem.event === 'pull_request') {
                     const pullRequest = yield findPullRequest(octokit, owner, repo, runItem.head_repository.owner.login, runItem.head_branch, runItem.head_sha);
                     if (pullRequest) {
@@ -1832,7 +1837,7 @@ function getOrigin(octokit, runId, owner, repo) {
         ];
     });
 }
-function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps) {
+function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes) {
     return __awaiter(this, void 0, void 0, function* () {
         core.info('\n###################################################################################\n');
         core.info(`All parameters: owner: ${owner}, repo: ${repo}, run id: ${sourceRunId}, ` +
@@ -1862,7 +1867,7 @@ function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, own
             throw Error(`Wrong cancel mode ${cancelMode}! This should never happen.`);
         }
         core.info('\n###################################################################################\n');
-        return yield findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, reason);
+        return yield findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason);
     });
 }
 function verboseOutput(name, value) {
@@ -1885,8 +1890,13 @@ function run() {
         const jobNameRegexps = jobNameRegexpsString
             ? JSON.parse(jobNameRegexpsString)
             : [];
+        const skipEventTypesString = core.getInput('skipEventTypes');
+        const skipEventTypes = skipEventTypesString
+            ? JSON.parse(skipEventTypesString)
+            : [];
         const [owner, repo] = repository.split('/');
-        core.info(`\nGetting workflow id for source run id: ${sourceRunId}, owner: ${owner}, repo: ${repo}\n`);
+        core.info(`\nGetting workflow id for source run id: ${sourceRunId}, owner: ${owner}, repo: ${repo},` +
+            ` skipEventTypes: ${skipEventTypes}\n`);
         const sourceWorkflowId = yield getWorkflowId(octokit, sourceRunId, owner, repo);
         core.info(`Repository: ${repository}, Owner: ${owner}, Repo: ${repo}, ` +
             `Event name: ${eventName}, CancelMode: ${cancelMode}, ` +
@@ -1926,7 +1936,7 @@ function run() {
                 body: `${notifyPRMessageStart} [The workflow run](${selfWorkflowRunUrl})`
             });
         }
-        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps);
+        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes);
         verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns));
     });
 }

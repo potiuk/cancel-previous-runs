@@ -114,6 +114,8 @@ and `schedule` events are no longer needed.
 | `notifyPRCancelMessage` | no       |              | Optional cancel message to use instead of the default one when notifyPRCancel is true.  It is only used in 'self' cancelling mode.                                                                               |
 | `notifyPRMessageStart`  | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
 | `jobNameRegexps`        | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
+| `skipEventTypes`        | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events..                                                       |
+
 
 The job cancel modes work as follows:
 
@@ -303,6 +305,9 @@ This works for all kind of triggering events (`push`, `pull_request`, `schedule`
 events triggered in the local repository, as well as triggered from the forks, so you do not need
 to set up any extra actions to cancel internal Pushes/Pull Requests.
 
+You can also choose to skip certain types of events (for example `push` and `schedule` if you want your
+jobs to run to full completion for this kind of events.
+
 ```yaml
 name: Cancelling
 on:
@@ -322,6 +327,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
           notifyPRCancel: true
+          skipEventTypes: '["push", "schedule"]'
 ```
 
 Note that `duplicate` cancel mode cannot be used for `workflow_run` type of event without `sourceId` input.
