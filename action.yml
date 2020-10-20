@@ -46,6 +46,11 @@ inputs:
       Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used
       in order to skip direct pushes or scheduled events.
     required: false
+  workflowFileName:
+    description: |
+      Name of the workflow file. It can be used if you want to cancel a different workflow than yours.
+    required: false
+
 runs:
   using: 'node12'
   main: 'dist/index.js'
