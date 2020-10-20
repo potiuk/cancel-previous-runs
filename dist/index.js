@@ -1894,29 +1894,37 @@ function run() {
         const skipEventTypes = skipEventTypesString
             ? JSON.parse(skipEventTypesString)
             : [];
+        const workflowFileName = core.getInput('workflowFileName');
         const [owner, repo] = repository.split('/');
         core.info(`\nGetting workflow id for source run id: ${sourceRunId}, owner: ${owner}, repo: ${repo},` +
             ` skipEventTypes: ${skipEventTypes}\n`);
-        const sourceWorkflowId = yield getWorkflowId(octokit, sourceRunId, owner, repo);
+        let sourceWorkflowId;
+        if (workflowFileName) {
+            sourceWorkflowId = workflowFileName;
+            core.info(`\nFinding runs for another workflow found by ${workflowFileName} name: ${sourceWorkflowId}\n`);
+        }
+        else {
+            sourceWorkflowId = yield getWorkflowId(octokit, sourceRunId, owner, repo);
+            if (sourceRunId === selfRunId) {
+                core.info(`\nFinding runs for my own workflow ${sourceWorkflowId}\n`);
+            }
+            else {
+                core.info(`\nFinding runs for source workflow ${sourceWorkflowId}\n`);
+            }
+            if (eventName === 'workflow_run' && sourceRunId === selfRunId) {
+                if (cancelMode === CancelMode.DUPLICATES)
+                    throw Error(`You cannot run "workflow_run" in ${cancelMode} cancelMode without "sourceId" input.` +
+                        'It will likely not work as you intended - it will cancel runs which are not duplicates!' +
+                        'See the docs for details.');
+            }
+        }
         core.info(`Repository: ${repository}, Owner: ${owner}, Repo: ${repo}, ` +
             `Event name: ${eventName}, CancelMode: ${cancelMode}, ` +
             `sourceWorkflowId: ${sourceWorkflowId}, sourceRunId: ${sourceRunId}, selfRunId: ${selfRunId}, ` +
             `jobNames: ${jobNameRegexps}`);
-        if (sourceRunId === selfRunId) {
-            core.info(`\nFinding runs for my own workflow ${sourceWorkflowId}\n`);
-        }
-        else {
-            core.info(`\nFinding runs for source workflow ${sourceWorkflowId}\n`);
-        }
         if (jobNameRegexps.length > 0 &&
             [CancelMode.DUPLICATES, CancelMode.SELF].includes(cancelMode)) {
             throw Error(`You cannot specify jobNames on ${cancelMode} cancelMode.`);
-        }
-        if (eventName === 'workflow_run' && sourceRunId === selfRunId) {
-            if (cancelMode === CancelMode.DUPLICATES)
-                throw Error(`You cannot run "workflow_run" in ${cancelMode} cancelMode without "sourceId" input.` +
-                    'It will likely not work as you intended - it will cancel runs which are not duplicates!' +
-                    'See the docs for details.');
         }
         const [headRepo, headBranch, sourceEventName, headSha, mergeCommitSha, pullRequest] = yield getOrigin(octokit, sourceRunId, owner, repo);
         verboseOutput('sourceHeadRepo', headRepo);

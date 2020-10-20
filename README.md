@@ -15,11 +15,6 @@
   - [Inputs](#inputs)
   - [Outputs](#outputs)
 - [Examples](#examples)
-  - [Repositories that do not use Pull Requests from forks](#repositories-that-do-not-use-pull-requests-from-forks)
-    - [Cancel duplicate runs for "self" workflow](#cancel-duplicate-runs-for-self-workflow)
-    - [Cancel "self" workflow run](#cancel-self-workflow-run)
-    - [Fail-fast workflow runs with failed jobs](#fail-fast-workflow-runs-with-failed-jobs)
-    - [Cancel all runs with named jobs](#cancel-all-runs-with-named-jobs)
   - [Repositories that use Pull Requests from forks](#repositories-that-use-pull-requests-from-forks)
     - [Cancel duplicate runs for the source workflow](#cancel-duplicate-runs-for-the-source-workflow)
     - [Cancel duplicate jobs for triggered workflow](#cancel-duplicate-jobs-for-triggered-workflow)
@@ -28,6 +23,12 @@
     - [Fail-fast source workflow runs with failed jobs](#fail-fast-source-workflow-runs-with-failed-jobs)
     - [Fail-fast source workflow runs with failed jobs and corresponding triggered runs](#fail-fast-source-workflow-runs-with-failed-jobs-and-corresponding-triggered-runs)
     - [Fail-fast for triggered workflow runs with failed jobs](#fail-fast-for-triggered-workflow-runs-with-failed-jobs)
+    - [Cancel another workflow run](#cancel-another-workflow-run)
+  - [Repositories that do not use Pull Requests from forks](#repositories-that-do-not-use-pull-requests-from-forks)
+    - [Cancel duplicate runs for "self" workflow](#cancel-duplicate-runs-for-self-workflow)
+    - [Cancel "self" workflow run](#cancel-self-workflow-run)
+    - [Fail-fast workflow runs with failed jobs](#fail-fast-workflow-runs-with-failed-jobs)
+    - [Cancel all runs with named jobs](#cancel-all-runs-with-named-jobs)
   - [Development environment](#development-environment)
   - [License](#license)
 
@@ -114,7 +115,8 @@ and `schedule` events are no longer needed.
 | `notifyPRCancelMessage` | no       |              | Optional cancel message to use instead of the default one when notifyPRCancel is true.  It is only used in 'self' cancelling mode.                                                                               |
 | `notifyPRMessageStart`  | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
 | `jobNameRegexps`        | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
-| `skipEventTypes`        | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events..                                                       |
+| `skipEventTypes`        | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events.                                                        |
+| `workflowFileName`      | no       |              | Name of the workflow file. It can be used if you want to cancel a different workflow than yours.                                                                                                                 |
 
 
 The job cancel modes work as follows:
@@ -144,127 +146,6 @@ The job cancel modes work as follows:
 
 Note that you can combine the steps below in several steps of the same job. The examples here are showing
 one step per case for clarity.
-
-## Repositories that do not use Pull Requests from forks
-
-Note that examples in this chapter only work if you do not have Pull Requests coming from forks (so for
-example if you only work in a private repository). When those action runs within the usual `pull_request`
-triggered runs coming from a fork, they have not enough permissions to cancel running workflows.
-
-If you want to cancel `pull_requests` from forks, you need to use `workflow_run` triggered runs - see the
-[Repositories that use Pull Requests from fork](#repositories-that-use-pull-requests-from-forks) chapter.
-
-Note that in case you configure the separate `workflow_run` Cancelling workflow, there is no need to add
-the action to the "source" workflows. The "Canceling workflow" pattern handles well not only Pull Requests
-from the forks, but also all other cases - including cancelling Pull Requests for the same repository
-and canceling scheduled runs.
-
-### Cancel duplicate runs for "self" workflow
-
-Cancels past runs for the same workflow (with the same branch).
-
-In the case below, any of the direct "push" events will cancel all past runs for the same branch as the
-one being pushed. However, it can be configured for "pull_request" (in the same repository) or "schedule"
-type of events as well. It will also notify the PR with the comment containining why it has been
-cancelled.
-
-```yaml
-name: CI
-on: push
-jobs:
-  cancel-duplicate-workflow-runs:
-    name: "Cancel duplicate workflow runs"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: potiuk/cancel-workflow-runs@v2
-        name: "Cancel duplicate workflow runs"
-        with:
-          cancelMode: duplicates
-          notifyPRCancel: true
-```
-
-### Cancel "self" workflow run
-
-This is useful in case you decide to cancel "self" run.
-
-In the case below - own workflow will be cancelled immediately. It can be configured for "push",
-"pull_request" (from the same repository) or "schedule" type of events.
-
-```yaml
-name: CI
-on: push
-jobs:
-  cancel-self-run:
-    name: "Cancel the self workflow run"
-    runs-on: ubuntu-latest
-    steps:
-      - name: "Cancel the self workflow run"
-        uses: potiuk/cancel-workflow-runs@v2
-        with:
-          cancelMode: self
-          token: ${{ secrets.GITHUB_TOKEN }}
-          notifyPRCancel: true
-```
-
-### Fail-fast workflow runs with failed jobs
-
-Cancels all runs (including self run!) if they have failed jobs matching any of the regular expressions.
-Note that it does not take into account the branch of the running jobs. It will cancel all runs with failed
-jobs, no matter what branch originated it.
-
-In the case below, if any of the own workflow runs have failed jobs matching any of the
-`^Static checks$` and `^Build docs^` or `^Build prod image .*` regexp, this workflow will cancel the runs.
-
-```yaml
-name: CI
-on:
-  push:
-
-jobs:
-  cancel-self-failed-runs:
-    name: "Cancel failed runs"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: potiuk/cancel-workflow-runs@v2
-        name: "Cancel failed runs"
-        with:
-          cancelMode: failedJobs
-          token: ${{ secrets.GITHUB_TOKEN }}
-          jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
-          notifyPRCancel: true
-```
-
-### Cancel all runs with named jobs
-
-Cancels all runs (including self run!) if any of the job names match any of the regular
-expressions. Note that it does not take into account the branch of the runs. It will cancel all runs with
-matching jobs, no matter what branch originated it.
-
-This is useful in case of job names generated dynamically.
-
-In the case below, if any of the "self" workflow runs has job names that matches any of the
-`^Static checks$` and `^Build docs^` or `^Build prod image .*` regexp, this workflow will cancel the runs.
-
-```yaml
-on:
-  push:
-  workflow_run:
-    workflows: ['CI']
-    types: ['requested']
-
-jobs:
-  cancel-self-failed-runs:
-    name: "Cancel the self workflow run"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: potiuk/cancel-workflow-runs@v2
-        name: "Cancel past CI runs"
-        with:
-          cancelMode: namedJobs
-          token: ${{ secrets.GITHUB_TOKEN }}
-          jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
-          notifyPRCancel: true
-```
 
 ## Repositories that use Pull Requests from forks
 
@@ -609,6 +490,153 @@ jobs:
           cancelMode: failedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
+```
+
+### Cancel another workflow run
+
+This is useful in case you decide to cancel the *source run* that triggered the *triggered run*.
+In the case below, the step cancels the `CI` workflow that triggered the `Cancelling` run.
+
+```yaml
+name: Cancelling
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: ['requested']
+
+  cancel-other-workflow-run:
+    name: "Cancel the self CI workflow run"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Cancel the self CI workflow run"
+        uses: potiuk/cancel-workflow-runs@v2
+        with:
+          cancelMode: duplicates
+          token: ${{ secrets.GITHUB_TOKEN }}
+          workflowFileName: other_workflow.yml
+```
+
+
+
+## Repositories that do not use Pull Requests from forks
+
+Note that examples in this chapter only work if you do not have Pull Requests coming from forks (so for
+example if you only work in a private repository). When those action runs within the usual `pull_request`
+triggered runs coming from a fork, they have not enough permissions to cancel running workflows.
+
+If you want to cancel `pull_requests` from forks, you need to use `workflow_run` triggered runs - see the
+[Repositories that use Pull Requests from fork](#repositories-that-use-pull-requests-from-forks) chapter.
+
+Note that in case you configure the separate `workflow_run` Cancelling workflow, there is no need to add
+the action to the "source" workflows. The "Canceling workflow" pattern handles well not only Pull Requests
+from the forks, but also all other cases - including cancelling Pull Requests for the same repository
+and canceling scheduled runs.
+
+### Cancel duplicate runs for "self" workflow
+
+Cancels past runs for the same workflow (with the same branch).
+
+In the case below, any of the direct "push" events will cancel all past runs for the same branch as the
+one being pushed. However, it can be configured for "pull_request" (in the same repository) or "schedule"
+type of events as well. It will also notify the PR with the comment containining why it has been
+cancelled.
+
+```yaml
+name: CI
+on: push
+jobs:
+  cancel-duplicate-workflow-runs:
+    name: "Cancel duplicate workflow runs"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: potiuk/cancel-workflow-runs@v2
+        name: "Cancel duplicate workflow runs"
+        with:
+          cancelMode: duplicates
+          notifyPRCancel: true
+```
+
+### Cancel "self" workflow run
+
+This is useful in case you decide to cancel "self" run.
+
+In the case below - own workflow will be cancelled immediately. It can be configured for "push",
+"pull_request" (from the same repository) or "schedule" type of events.
+
+```yaml
+name: CI
+on: push
+jobs:
+  cancel-self-run:
+    name: "Cancel the self workflow run"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Cancel the self workflow run"
+        uses: potiuk/cancel-workflow-runs@v2
+        with:
+          cancelMode: self
+          token: ${{ secrets.GITHUB_TOKEN }}
+          notifyPRCancel: true
+```
+
+### Fail-fast workflow runs with failed jobs
+
+Cancels all runs (including self run!) if they have failed jobs matching any of the regular expressions.
+Note that it does not take into account the branch of the running jobs. It will cancel all runs with failed
+jobs, no matter what branch originated it.
+
+In the case below, if any of the own workflow runs have failed jobs matching any of the
+`^Static checks$` and `^Build docs^` or `^Build prod image .*` regexp, this workflow will cancel the runs.
+
+```yaml
+name: CI
+on:
+  push:
+
+jobs:
+  cancel-self-failed-runs:
+    name: "Cancel failed runs"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: potiuk/cancel-workflow-runs@v2
+        name: "Cancel failed runs"
+        with:
+          cancelMode: failedJobs
+          token: ${{ secrets.GITHUB_TOKEN }}
+          jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
+          notifyPRCancel: true
+```
+
+### Cancel all runs with named jobs
+
+Cancels all runs (including self run!) if any of the job names match any of the regular
+expressions. Note that it does not take into account the branch of the runs. It will cancel all runs with
+matching jobs, no matter what branch originated it.
+
+This is useful in case of job names generated dynamically.
+
+In the case below, if any of the "self" workflow runs has job names that matches any of the
+`^Static checks$` and `^Build docs^` or `^Build prod image .*` regexp, this workflow will cancel the runs.
+
+```yaml
+on:
+  push:
+  workflow_run:
+    workflows: ['CI']
+    types: ['requested']
+
+jobs:
+  cancel-self-failed-runs:
+    name: "Cancel the self workflow run"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: potiuk/cancel-workflow-runs@v2
+        name: "Cancel past CI runs"
+        with:
+          cancelMode: namedJobs
+          token: ${{ secrets.GITHUB_TOKEN }}
+          jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
+          notifyPRCancel: true
 ```
 
 
