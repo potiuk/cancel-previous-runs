@@ -732,6 +732,8 @@ async function run(): Promise<void> {
     'pullRequestNumber',
     pullRequest ? pullRequest.number.toString() : ''
   )
+  const labelNames = pullRequest ? pullRequest.labels.map(x => x.name) : []
+  verboseOutput('pullRequestLabels', JSON.stringify(labelNames))
   verboseOutput('mergeCommitSha', mergeCommitSha)
   verboseOutput('targetCommitSha', pullRequest ? mergeCommitSha : headSha)
 

@@ -131,16 +131,17 @@ The job cancel modes work as follows:
 
 ## Outputs
 
-| Output              | No `sourceRunId` specified                              | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                                       |
-|---------------------|---------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| `sourceHeadRepo`    | Current repository. Format: `owner/repo`                | Repository of the run that triggered this `workflow_run`. Format: `owner/repo`                       |
-| `sourceHeadBranch`  | Current branch.                                         | Branch of the run that triggered this `workflow_run`. Might be forked repo, if it is a pull_request. |
-| `sourceHeadSha`     | Current commit SHA: `{{ github.sha }}`                  | Commit sha of the run that triggered this `workflow_run`.                                            |
-| `mergeCommitSha`    | Merge commit SHA if PR-triggered event.                 | Merge commit SHA if PR-triggered event.                                                              |
-| `targetCommitSha`   | Target commit SHA (merge if present, otherwise source). | Target commit SHA (merge if present, otherwise source).                                              |
-| `pullRequestNumber` | Number of the associated Pull Request (if PR triggered) | Number of the associated Pull Request (if PR triggered)                                              |
-| `sourceEvent`       | Current event: ``${{ github.event }}``                  | Event of the run that triggered this `workflow_run`                                                  |
-| `cancelledRuns`     | JSON-stringified array of cancelled run ids.            | JSON-stringified array of cancelled run ids.                                                         |
+| Output              | No `sourceRunId` specified                                                        | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                                       |
+|---------------------|-----------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| `sourceHeadRepo`    | Current repository. Format: `owner/repo`                                          | Repository of the run that triggered this `workflow_run`. Format: `owner/repo`                       |
+| `sourceHeadBranch`  | Current branch.                                                                   | Branch of the run that triggered this `workflow_run`. Might be forked repo, if it is a pull_request. |
+| `sourceHeadSha`     | Current commit SHA: `{{ github.sha }}`                                            | Commit sha of the run that triggered this `workflow_run`.                                            |
+| `mergeCommitSha`    | Merge commit SHA if PR-triggered event.                                           | Merge commit SHA if PR-triggered event.                                                              |
+| `targetCommitSha`   | Target commit SHA (merge if present, otherwise source).                           | Target commit SHA (merge if present, otherwise source).                                              |
+| `pullRequestNumber` | Number of the associated Pull Request (if PR triggered)                           | Number of the associated Pull Request (if PR triggered)                                              |
+| `pullRequestLabels` | Stringified JSON array of Labels of the associated Pull Request (if PR triggered) |  Stringified JSON array of Labels of the associated Pull Request (if PR triggered)                   |
+| `sourceEvent`       | Current event: ``${{ github.event }}``                                            | Event of the run that triggered this `workflow_run`                                                  |
+| `cancelledRuns`     | JSON-stringified array of cancelled run ids.                                      | JSON-stringified array of cancelled run ids.                                                         |
 
 # Examples
 
@@ -259,7 +260,12 @@ jobs:
       sourceHeadRepo: ${{ steps.cancel.outputs.sourceHeadRepo }}
       sourceHeadBranch: ${{ steps.cancel.outputs.sourceHeadBranch }}
       sourceHeadSha: ${{ steps.cancel.outputs.sourceHeadSha }}
+      mergeCommitSha: ${{ steps.cancel.outputs.mergeCommitSha }}
+      targetCommitSha: ${{ steps.cancel.outputs.targetCommitSha }}
+      pullRequestNumber: ${{ steps.cancel.outputs.pullRequestNumber }}
+      pullRequestLabels: ${{ steps.cancel.outputs.pullRequestLabels }}
       sourceEvent: ${{ steps.cancel.outputs.sourceEvent }}
+      cancelledRuns: ${{ steps.cancel.outputs.cancelledRuns }}
     steps:
       - uses: potiuk/cancel-workflow-runs@v2
         id: cancel
