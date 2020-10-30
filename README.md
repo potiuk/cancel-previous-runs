@@ -106,17 +106,18 @@ and `schedule` events are no longer needed.
 
 ## Inputs
 
-| Input                   | Required | Default      | Comment                                                                                                                                                                                                          |
-|-------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `token`                 | yes      |              | The github token passed from `${{ secrets.GITHUB_TOKEN }}`                                                                                                                                                       |
-| `cancelMode`            | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `self`, `failedJobs`, `namedJobs`                                                                                                             |
-| `sourceRunId`           | no       |              | Useful only in `workflow_run` triggered events. It should be set to the id of the workflow triggering the run `${{ github.event.workflow_run.id }}`  in case cancel operation should cancel the source workflow. |
-| `notifyPRCancel`        | no       |              | Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why they are being cancelled.                                                                                            |
-| `notifyPRCancelMessage` | no       |              | Optional cancel message to use instead of the default one when notifyPRCancel is true.  It is only used in 'self' cancelling mode.                                                                               |
-| `notifyPRMessageStart`  | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
-| `jobNameRegexps`        | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
-| `skipEventTypes`        | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events.                                                        |
-| `workflowFileName`      | no       |              | Name of the workflow file. It can be used if you want to cancel a different workflow than yours.                                                                                                                 |
+| Input                    | Required | Default      | Comment                                                                                                                                                                                                          |
+|--------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `token`                  | yes      |              | The github token passed from `${{ secrets.GITHUB_TOKEN }}`                                                                                                                                                       |
+| `cancelMode`             | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `self`, `failedJobs`, `namedJobs`                                                                                                             |
+| `cancelFutureDuplicates` | no       | true         | In case of duplicate canceling, cancel also future duplicates leaving only the "freshest" running job and not all the future jobs. By default it is set to true.                                                 |
+| `sourceRunId`            | no       |              | Useful only in `workflow_run` triggered events. It should be set to the id of the workflow triggering the run `${{ github.event.workflow_run.id }}`  in case cancel operation should cancel the source workflow. |
+| `notifyPRCancel`         | no       |              | Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why they are being cancelled.                                                                                            |
+| `notifyPRCancelMessage`  | no       |              | Optional cancel message to use instead of the default one when notifyPRCancel is true.  It is only used in 'self' cancelling mode.                                                                               |
+| `notifyPRMessageStart`   | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
+| `jobNameRegexps`         | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` cancel modes.                          |
+| `skipEventTypes`         | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events.                                                        |
+| `workflowFileName`       | no       |              | Name of the workflow file. It can be used if you want to cancel a different workflow than yours.                                                                                                                 |
 
 
 The job cancel modes work as follows:
@@ -205,6 +206,7 @@ jobs:
         name: "Cancel duplicate workflow runs"
         with:
           cancelMode: duplicates
+          cancelFutureDuplicates: true
           token: ${{ secrets.GITHUB_TOKEN }}
           sourceRunId: ${{ github.event.workflow_run.id }}
           notifyPRCancel: true
@@ -266,6 +268,7 @@ jobs:
         name: "Cancel duplicate CI runs"
         with:
           cancelMode: duplicates
+          cancelFutureDuplicates: true
           token: ${{ secrets.GITHUB_TOKEN }}
           notifyPRCancel: true
           notifyPRMessageStart: |
@@ -512,6 +515,7 @@ on:
         uses: potiuk/cancel-workflow-runs@v2
         with:
           cancelMode: duplicates
+          cancelFutureDuplicates: true
           token: ${{ secrets.GITHUB_TOKEN }}
           workflowFileName: other_workflow.yml
 ```
@@ -553,6 +557,7 @@ jobs:
         name: "Cancel duplicate workflow runs"
         with:
           cancelMode: duplicates
+          cancelFutureDuplicates: true
           notifyPRCancel: true
 ```
 
