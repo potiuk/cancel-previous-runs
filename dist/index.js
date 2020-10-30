@@ -1622,7 +1622,7 @@ function getWorkflowRuns(octokit, statusValues, cancelMode, createListRunQuery) 
         return workflowRuns;
     });
 }
-function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNamesRegexps, skipEventTypes) {
+function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, cancelFutureDuplicates, sourceRunId, jobNamesRegexps, skipEventTypes) {
     return __awaiter(this, void 0, void 0, function* () {
         if ('completed' === runItem.status.toString()) {
             core.info(`\nThe run ${runItem.id} is completed. Not cancelling it.\n`);
@@ -1651,17 +1651,17 @@ function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, 
         else if (cancelMode === CancelMode.NAMED_JOBS) {
             // Cancel all jobs that have failed jobs (no matter when started)
             if (yield jobsMatchingNames(octokit, owner, repo, runItem.id, jobNamesRegexps, false)) {
-                core.info(`\nSome jobs have matching names in ${runItem.id} . Cancelling it.\n`);
+                core.info(`\nSome jobs have matching names in ${runItem.id} . Returning it.\n`);
                 return true;
             }
             else {
-                core.info(`\nNone of the jobs match name in ${runItem.id}. Not cancelling it.\n`);
+                core.info(`\nNone of the jobs match name in ${runItem.id}. Returning it.\n`);
                 return false;
             }
         }
         else if (cancelMode === CancelMode.SELF) {
             if (runItem.id === sourceRunId) {
-                core.info(`\nCancelling the "source" run: ${runItem.id}.\n`);
+                core.info(`\nReturning the "source" run: ${runItem.id}.\n`);
                 return true;
             }
             else {
@@ -1675,16 +1675,20 @@ function shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, 
                     `repo: ${runHeadRepo} (expected ${headRepo}). Not cancelling it\n`);
                 return false;
             }
-            if (runItem.id === sourceRunId) {
-                core.info(`\nThis is my own run ${runItem.id}. I have self-preservation mechanism. Not cancelling myself!\n`);
-                return false;
-            }
-            else if (runItem.id > sourceRunId) {
-                core.info(`\nThe run ${runItem.id} is started later than mt own run ${sourceRunId}. Not cancelling it\n`);
-                return false;
+            if (cancelFutureDuplicates) {
+                core.info(`\nCancel Future Duplicates: Returning run id that might be duplicate or my own run: ${runItem.id}.\n`);
+                return true;
             }
             else {
-                core.info(`\nCancelling duplicate of my own run: ${runItem.id}.\n`);
+                if (runItem.id === sourceRunId) {
+                    core.info(`\nThis is my own run ${runItem.id}. Not returning myself!\n`);
+                    return false;
+                }
+                else if (runItem.id > sourceRunId) {
+                    core.info(`\nThe run ${runItem.id} is started later than my own run ${sourceRunId}. Not returning it\n`);
+                    return false;
+                }
+                core.info(`\nFound duplicate of my own run: ${runItem.id}.\n`);
                 return true;
             }
         }
@@ -1710,7 +1714,7 @@ function cancelRun(octokit, owner, repo, runId) {
         }
     });
 }
-function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason) {
+function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason) {
     return __awaiter(this, void 0, void 0, function* () {
         const statusValues = ['queued', 'in_progress'];
         const workflowRuns = yield getWorkflowRuns(octokit, statusValues, cancelMode, function (status) {
@@ -1735,29 +1739,39 @@ function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, ow
                 throw Error(`\nWrong cancel mode ${cancelMode}! This should never happen.\n`);
             }
         });
-        const idsToCancel = [];
+        const workflowsToCancel = [];
         const pullRequestToNotify = [];
         for (const [key, runItem] of workflowRuns) {
-            core.info(`\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status}\n`);
-            if (yield shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, sourceRunId, jobNameRegexps, skipEventTypes)) {
+            core.info(`\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status},` +
+                ` Created at ${runItem.created_at}\n`);
+            if (yield shouldBeCancelled(octokit, owner, repo, runItem, headRepo, cancelMode, cancelFutureDuplicates, sourceRunId, jobNameRegexps, skipEventTypes)) {
                 if (notifyPRCancel && runItem.event === 'pull_request') {
                     const pullRequest = yield findPullRequest(octokit, owner, repo, runItem.head_repository.owner.login, runItem.head_branch, runItem.head_sha);
                     if (pullRequest) {
                         pullRequestToNotify.push(pullRequest.number);
                     }
                 }
-                idsToCancel.push(runItem.id);
+                workflowsToCancel.push([runItem.id, runItem.created_at]);
             }
         }
-        // Sort from smallest number - this way we always kill current one at the end (if we kill it at all)
-        const sortedIdsToCancel = idsToCancel.sort((id1, id2) => id1 - id2);
-        if (sortedIdsToCancel.length > 0) {
+        // Sort from most recent date - this way we always kill current one at the end (if we kill it at all)
+        const sortedRunTuplesToCancel = workflowsToCancel.sort((runTuple1, runTuple2) => runTuple2[1].localeCompare(runTuple1[1]));
+        if (sortedRunTuplesToCancel.length > 0) {
+            if (cancelMode === CancelMode.DUPLICATES && cancelFutureDuplicates) {
+                core.info(`\nSkipping the first run (${sortedRunTuplesToCancel[0]}) of all the matching ` +
+                    `duplicates - this one we are going to leave in peace!\n`);
+                sortedRunTuplesToCancel.shift();
+            }
+            if (sortedRunTuplesToCancel.length === 0) {
+                core.info(`\nNo duplicates to cancel!\n`);
+                return sortedRunTuplesToCancel.map(runTuple => runTuple[0]);
+            }
             core.info('\n######  Cancelling runs starting from the oldest  ##########\n' +
-                `\n     Runs to cancel: ${sortedIdsToCancel.length}\n` +
+                `\n     Runs to cancel: ${sortedRunTuplesToCancel.length}\n` +
                 `\n     PRs to notify: ${pullRequestToNotify.length}\n`);
-            for (const runId of sortedIdsToCancel) {
-                core.info(`\nCancelling run: ${runId}.\n`);
-                yield cancelRun(octokit, owner, repo, runId);
+            for (const runTuple of sortedRunTuplesToCancel) {
+                core.info(`\nCancelling run: ${runTuple}.\n`);
+                yield cancelRun(octokit, owner, repo, runTuple[0]);
             }
             for (const pullRequestNumber of pullRequestToNotify) {
                 const selfWorkflowRunUrl = `https://github.com/${owner}/${repo}/actions/runs/${selfRunId}`;
@@ -1768,7 +1782,7 @@ function findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, ow
         else {
             core.info('\n######  There are no runs to cancel!              ##########\n');
         }
-        return sortedIdsToCancel;
+        return sortedRunTuplesToCancel.map(runTuple => runTuple[0]);
     });
 }
 function getRequiredEnv(key) {
@@ -1837,7 +1851,7 @@ function getOrigin(octokit, runId, owner, repo) {
         ];
     });
 }
-function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes) {
+function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates) {
     return __awaiter(this, void 0, void 0, function* () {
         core.info('\n###################################################################################\n');
         core.info(`All parameters: owner: ${owner}, repo: ${repo}, run id: ${sourceRunId}, ` +
@@ -1867,7 +1881,7 @@ function performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, own
             throw Error(`Wrong cancel mode ${cancelMode}! This should never happen.`);
         }
         core.info('\n###################################################################################\n');
-        return yield findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason);
+        return yield findAndCancelRuns(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason);
     });
 }
 function verboseOutput(name, value) {
@@ -1887,6 +1901,7 @@ function run() {
         const notifyPRMessageStart = core.getInput('notifyPRMessageStart');
         const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId;
         const jobNameRegexpsString = core.getInput('jobNameRegexps');
+        const cancelFutureDuplicates = (core.getInput('cancelFutureDuplicates') || 'true').toLowerCase() === 'true';
         const jobNameRegexps = jobNameRegexpsString
             ? JSON.parse(jobNameRegexpsString)
             : [];
@@ -1944,7 +1959,7 @@ function run() {
                 body: `${notifyPRMessageStart} [The workflow run](${selfWorkflowRunUrl})`
             });
         }
-        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes);
+        const cancelledRuns = yield performCancelJob(octokit, selfRunId, sourceWorkflowId, sourceRunId, owner, repo, headRepo, headBranch, sourceEventName, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates);
         verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns));
     });
 }

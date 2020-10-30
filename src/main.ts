@@ -203,6 +203,7 @@ async function shouldBeCancelled(
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
   headRepo: string,
   cancelMode: CancelMode,
+  cancelFutureDuplicates: boolean,
   sourceRunId: number,
   jobNamesRegexps: string[],
   skipEventTypes: string[]
@@ -259,18 +260,18 @@ async function shouldBeCancelled(
       )
     ) {
       core.info(
-        `\nSome jobs have matching names in ${runItem.id} . Cancelling it.\n`
+        `\nSome jobs have matching names in ${runItem.id} . Returning it.\n`
       )
       return true
     } else {
       core.info(
-        `\nNone of the jobs match name in ${runItem.id}. Not cancelling it.\n`
+        `\nNone of the jobs match name in ${runItem.id}. Returning it.\n`
       )
       return false
     }
   } else if (cancelMode === CancelMode.SELF) {
     if (runItem.id === sourceRunId) {
-      core.info(`\nCancelling the "source" run: ${runItem.id}.\n`)
+      core.info(`\nReturning the "source" run: ${runItem.id}.\n`)
       return true
     } else {
       return false
@@ -284,18 +285,22 @@ async function shouldBeCancelled(
       )
       return false
     }
-    if (runItem.id === sourceRunId) {
+    if (cancelFutureDuplicates) {
       core.info(
-        `\nThis is my own run ${runItem.id}. I have self-preservation mechanism. Not cancelling myself!\n`
+        `\nCancel Future Duplicates: Returning run id that might be duplicate or my own run: ${runItem.id}.\n`
       )
-      return false
-    } else if (runItem.id > sourceRunId) {
-      core.info(
-        `\nThe run ${runItem.id} is started later than mt own run ${sourceRunId}. Not cancelling it\n`
-      )
-      return false
+      return true
     } else {
-      core.info(`\nCancelling duplicate of my own run: ${runItem.id}.\n`)
+      if (runItem.id === sourceRunId) {
+        core.info(`\nThis is my own run ${runItem.id}. Not returning myself!\n`)
+        return false
+      } else if (runItem.id > sourceRunId) {
+        core.info(
+          `\nThe run ${runItem.id} is started later than my own run ${sourceRunId}. Not returning it\n`
+        )
+        return false
+      }
+      core.info(`\nFound duplicate of my own run: ${runItem.id}.\n`)
       return true
     }
   } else {
@@ -338,6 +343,7 @@ async function findAndCancelRuns(
   headBranch: string,
   sourceEventName: string,
   cancelMode: CancelMode,
+  cancelFutureDuplicates: boolean,
   notifyPRCancel: boolean,
   notifyPRMessageStart: string,
   jobNameRegexps: string[],
@@ -400,11 +406,12 @@ async function findAndCancelRuns(
       }
     }
   )
-  const idsToCancel: number[] = []
+  const workflowsToCancel: [number, string][] = []
   const pullRequestToNotify: number[] = []
   for (const [key, runItem] of workflowRuns) {
     core.info(
-      `\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status}\n`
+      `\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status},` +
+        ` Created at ${runItem.created_at}\n`
     )
     if (
       await shouldBeCancelled(
@@ -414,6 +421,7 @@ async function findAndCancelRuns(
         runItem,
         headRepo,
         cancelMode,
+        cancelFutureDuplicates,
         sourceRunId,
         jobNameRegexps,
         skipEventTypes
@@ -432,20 +440,33 @@ async function findAndCancelRuns(
           pullRequestToNotify.push(pullRequest.number)
         }
       }
-      idsToCancel.push(runItem.id)
+      workflowsToCancel.push([runItem.id, runItem.created_at])
     }
   }
-  // Sort from smallest number - this way we always kill current one at the end (if we kill it at all)
-  const sortedIdsToCancel = idsToCancel.sort((id1, id2) => id1 - id2)
-  if (sortedIdsToCancel.length > 0) {
+  // Sort from most recent date - this way we always kill current one at the end (if we kill it at all)
+  const sortedRunTuplesToCancel = workflowsToCancel.sort(
+    (runTuple1, runTuple2) => runTuple2[1].localeCompare(runTuple1[1])
+  )
+  if (sortedRunTuplesToCancel.length > 0) {
+    if (cancelMode === CancelMode.DUPLICATES && cancelFutureDuplicates) {
+      core.info(
+        `\nSkipping the first run (${sortedRunTuplesToCancel[0]}) of all the matching ` +
+          `duplicates - this one we are going to leave in peace!\n`
+      )
+      sortedRunTuplesToCancel.shift()
+    }
+    if (sortedRunTuplesToCancel.length === 0) {
+      core.info(`\nNo duplicates to cancel!\n`)
+      return sortedRunTuplesToCancel.map(runTuple => runTuple[0])
+    }
     core.info(
       '\n######  Cancelling runs starting from the oldest  ##########\n' +
-        `\n     Runs to cancel: ${sortedIdsToCancel.length}\n` +
+        `\n     Runs to cancel: ${sortedRunTuplesToCancel.length}\n` +
         `\n     PRs to notify: ${pullRequestToNotify.length}\n`
     )
-    for (const runId of sortedIdsToCancel) {
-      core.info(`\nCancelling run: ${runId}.\n`)
-      await cancelRun(octokit, owner, repo, runId)
+    for (const runTuple of sortedRunTuplesToCancel) {
+      core.info(`\nCancelling run: ${runTuple}.\n`)
+      await cancelRun(octokit, owner, repo, runTuple[0])
     }
     for (const pullRequestNumber of pullRequestToNotify) {
       const selfWorkflowRunUrl = `https://github.com/${owner}/${repo}/actions/runs/${selfRunId}`
@@ -465,7 +486,7 @@ async function findAndCancelRuns(
       '\n######  There are no runs to cancel!              ##########\n'
     )
   }
-  return sortedIdsToCancel
+  return sortedRunTuplesToCancel.map(runTuple => runTuple[0])
 }
 
 function getRequiredEnv(key: string): string {
@@ -581,7 +602,8 @@ async function performCancelJob(
   notifyPRCancelMessage: string,
   notifyPRMessageStart: string,
   jobNameRegexps: string[],
-  skipEventTypes: string[]
+  skipEventTypes: string[],
+  cancelFutureDuplicates: boolean
 ): Promise<number[]> {
   core.info(
     '\n###################################################################################\n'
@@ -635,6 +657,7 @@ async function performCancelJob(
     headBranch,
     sourceEventName,
     cancelMode,
+    cancelFutureDuplicates,
     notifyPRCancel,
     notifyPRMessageStart,
     jobNameRegexps,
@@ -662,6 +685,8 @@ async function run(): Promise<void> {
   const notifyPRMessageStart = core.getInput('notifyPRMessageStart')
   const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId
   const jobNameRegexpsString = core.getInput('jobNameRegexps')
+  const cancelFutureDuplicates =
+    (core.getInput('cancelFutureDuplicates') || 'true').toLowerCase() === 'true'
   const jobNameRegexps = jobNameRegexpsString
     ? JSON.parse(jobNameRegexpsString)
     : []
@@ -761,7 +786,8 @@ async function run(): Promise<void> {
     notifyPRCancelMessage,
     notifyPRMessageStart,
     jobNameRegexps,
-    skipEventTypes
+    skipEventTypes,
+    cancelFutureDuplicates
   )
 
   verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns))

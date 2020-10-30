@@ -36,6 +36,11 @@ inputs:
           * `failedJobs`  - cancels all runs that failed in jobs matching one of the regexps
           * `namedJobs`   - cancels runs where names of some jobs match some of regexps
     required: false
+  cancelFutureDuplicates:
+    description: |
+      In case of duplicate canceling, cancel also future duplicates leaving only the "freshest" running
+      job and not all the future jobs. By default it is set to true.
+    required: false
   jobNameRegexps:
     description: |
       Array of job name regexps (JSON-encoded string). Used by `failedJobs` and `namedJobs` cancel modes
