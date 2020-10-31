@@ -14,7 +14,8 @@
 - [Inputs and outputs](#inputs-and-outputs)
   - [Inputs](#inputs)
   - [Outputs](#outputs)
-- [Examples](#examples)
+  - [Most often used canceling example](#most-often-used-canceling-example)
+- [More Examples](#more-examples)
   - [Repositories that use Pull Requests from forks](#repositories-that-use-pull-requests-from-forks)
     - [Cancel duplicate runs for the source workflow](#cancel-duplicate-runs-for-the-source-workflow)
     - [Cancel duplicate jobs for triggered workflow](#cancel-duplicate-jobs-for-triggered-workflow)
@@ -98,10 +99,6 @@ If you want a comprehensive solution, you should use the action as follows:
    The `workflow_run` should be responsible for all canceling actions. The examples below show
    the possible ways the action can be utilized.
 
-The previous version of this action (v1) used `schedule` events to cancel previous runs. With
-the announcement of pull_request_target by GitHub, the v2 version discourages using this pattern
-and `schedule` events are no longer needed.
-
 # Inputs and outputs
 
 ## Inputs
@@ -122,12 +119,13 @@ and `schedule` events are no longer needed.
 
 The job cancel modes work as follows:
 
-| Cancel Mode  | No `sourceRunId` specified                                             | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                      |
-|--------------|------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-| `duplicates` | Cancels past, duplicate runs from the same repo/branch as current run. | Cancels past, duplicate runs for the same repo/branch as the source run.            |
-| `self`       | Cancels self run.                                                      | Cancel the `sourceRunId` run.                                                       |
-| `failedJobs` | Cancels all runs of own workflow that have matching jobs that failed.  | Cancels all runs of the `sourceRunId` workflow that have matching jobs that failed. |
-| `namedJobs`  | Cancels all runs of own workflow that have matching jobs.              | Cancels all runs of the `sourceRunId` workflow that have matching jobs.             |
+| Cancel Mode     | No `sourceRunId` specified                                             | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                      |
+|-----------------|------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
+| `duplicates`    | Cancels duplicate runs from the same repo/branch as current run.       | Cancels duplicate runs for the same repo/branch as the source run.                  |
+| `allDuplicates` | Cancels duplicate runs from all running workflows.                     | Cancels duplicate runs from all running workflows.                                  |
+| `self`          | Cancels self run.                                                      | Cancel the `sourceRunId` run.                                                       |
+| `failedJobs`    | Cancels all runs of own workflow that have matching jobs that failed.  | Cancels all runs of the `sourceRunId` workflow that have matching jobs that failed. |
+| `namedJobs`     | Cancels all runs of own workflow that have matching jobs.              | Cancels all runs of the `sourceRunId` workflow that have matching jobs.             |
 
 
 ## Outputs
@@ -143,7 +141,38 @@ The job cancel modes work as follows:
 | `sourceEvent`       | Current event: ``${{ github.event }}``                  | Event of the run that triggered this `workflow_run`                                                  |
 | `cancelledRuns`     | JSON-stringified array of cancelled run ids.            | JSON-stringified array of cancelled run ids.                                                         |
 
-# Examples
+## Most often used canceling example
+
+The most common canceling example is that you want to cancel all duplicates appearing in your build queue.
+As of 4.1 version of the Action this can be realised by single workflow run that can cancel all duplicates
+for all running workflows. It is resistant to temporary queues - as it can cancel also the future, queued
+workflows that have duplicated, fresher (also queued workflows and this is recommended for everyone.
+
+The below example is a "workflow_run" type of event. The workflow_run event always has "write" access that allows
+it to cancel other workflows - even if they are coming from pull request.
+
+```yaml
+name: Cancelling Duplicates
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: ['requested']
+
+jobs:
+  cancel-duplicate-workflow-runs:
+    name: "Cancel duplicate workflow runs"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: potiuk/cancel-workflow-runs@v4_1
+        name: "Cancel duplicate workflow runs"
+        with:
+          cancelMode: allDuplicates
+          token: ${{ secrets.GITHUB_TOKEN }}
+          sourceRunId: ${{ github.event.workflow_run.id }}
+```
+
+
+# More Examples
 
 Note that you can combine the steps below in several steps of the same job. The examples here are showing
 one step per case for clarity.
@@ -202,7 +231,7 @@ jobs:
     name: "Cancel duplicate workflow runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Cancel duplicate workflow runs"
         with:
           cancelMode: duplicates
@@ -263,7 +292,7 @@ jobs:
       sourceHeadSha: ${{ steps.cancel.outputs.sourceHeadSha }}
       sourceEvent: ${{ steps.cancel.outputs.sourceEvent }}
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         id: cancel
         name: "Cancel duplicate CI runs"
         with:
@@ -276,7 +305,7 @@ jobs:
             that you will not see in the list of checks.
 
             You can checks the status of those images in:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Cancel duplicate Cancelling runs"
         with:
           cancelMode: namedJobs
@@ -326,7 +355,7 @@ on:
     runs-on: ubuntu-latest
     steps:
       - name: "Cancel the self CI workflow run"
-        uses: potiuk/cancel-workflow-runs@v2
+        uses: potiuk/cancel-workflow-runs@v4_1
         with:
           cancelMode: self
           notifyPRCancel: true
@@ -355,7 +384,7 @@ on:
     runs-on: ubuntu-latest
     steps:
       - name: "Cancel the self Cancelling workflow run"
-        uses: potiuk/cancel-workflow-runs@v2
+        uses: potiuk/cancel-workflow-runs@v4_1
         with:
           cancelMode: self
           notifyPRCancel: true
@@ -388,7 +417,7 @@ jobs:
     name: "Fail fast CI runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Fail fast CI runs"
         with:
           cancelMode: failedJobs
@@ -429,7 +458,7 @@ jobs:
     name: "Fail fast CI runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Fail fast CI. Source run: ${{ github.event.workflow_run.id }}"
         id: cancel-failed
         with:
@@ -452,7 +481,7 @@ jobs:
             echo "::set-output name=matching-regexp::${REGEXP}"
       - name: "Cancel triggered 'Cancelling' runs for the cancelled failed runs"
         if: steps.cancel-failed.outputs.cancelledRuns != '[]'
-        uses: potiuk/cancel-workflow-runs@master
+        uses: potiuk/cancel-workflow-runs@v4_1
         with:
           cancelMode: namedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -487,7 +516,7 @@ jobs:
     name: "Fail fast Canceling runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Fail fast Canceling runs"
         with:
           cancelMode: failedJobs
@@ -512,7 +541,7 @@ on:
     runs-on: ubuntu-latest
     steps:
       - name: "Cancel the self CI workflow run"
-        uses: potiuk/cancel-workflow-runs@v2
+        uses: potiuk/cancel-workflow-runs@v4_1
         with:
           cancelMode: duplicates
           cancelFutureDuplicates: true
@@ -553,7 +582,7 @@ jobs:
     name: "Cancel duplicate workflow runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Cancel duplicate workflow runs"
         with:
           cancelMode: duplicates
@@ -577,7 +606,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Cancel the self workflow run"
-        uses: potiuk/cancel-workflow-runs@v2
+        uses: potiuk/cancel-workflow-runs@v4_1
         with:
           cancelMode: self
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -603,7 +632,7 @@ jobs:
     name: "Cancel failed runs"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Cancel failed runs"
         with:
           cancelMode: failedJobs
@@ -635,7 +664,7 @@ jobs:
     name: "Cancel the self workflow run"
     runs-on: ubuntu-latest
     steps:
-      - uses: potiuk/cancel-workflow-runs@v2
+      - uses: potiuk/cancel-workflow-runs@v4_1
         name: "Cancel past CI runs"
         with:
           cancelMode: namedJobs
