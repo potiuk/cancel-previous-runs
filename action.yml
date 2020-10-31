@@ -29,12 +29,17 @@ inputs:
   cancelMode:
     description: |
       The mode of cancel. One of:
-          * `duplicates`  - cancels past, duplicate runs from the same repo/branch as local run or
-                            sourceId workflow. This is the default mode when cancelMode is not specified.
-          * `self`        - cancels self run - either own run if sourceRunId is not set, or
-                            the source run that triggered the `workflow_run'
-          * `failedJobs`  - cancels all runs that failed in jobs matching one of the regexps
-          * `namedJobs`   - cancels runs where names of some jobs match some of regexps
+          * `duplicates`    - cancels duplicate runs from the same repo/branch as local run or
+                              sourceId workflow. This is the default mode when cancelMode is not specified.
+          * `allDuplicates` - cancels duplicate runs from all workflows. It is more aggressive version of
+                              duplicate canceling - as it cancels all duplicates. It is helpful in case
+                              of long queues of builds - as it is enough that one of the workflows that
+                              cancel duplicates is executed, it can effectively clean-up the queue in this
+                              case for all the future, queued runs.
+          * `self`          - cancels self run - either own run if sourceRunId is not set, or
+                              the source run that triggered the `workflow_run'
+          * `failedJobs`    - cancels all runs that failed in jobs matching one of the regexps
+          * `namedJobs`     - cancels runs where names of some jobs match some of regexps
     required: false
   cancelFutureDuplicates:
     description: |
