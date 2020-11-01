@@ -228,7 +228,7 @@ async function jobsMatchingNames(
   const allMatches: string[] = []
   let matched = false
   for await (const item of repositoryInfo.octokit.paginate.iterator(listJobs)) {
-    for (const job of item.data) {
+    for (const job of item.data.jobs) {
       core.info(`    The job name: ${job.name}, Conclusion: ${job.conclusion}`)
       const [jobMatched, jobMatches] = matchInArray(job.name, jobNameRegexps)
       if (jobMatched) {

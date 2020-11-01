@@ -1627,7 +1627,7 @@ function jobsMatchingNames(repositoryInfo, runId, jobNameRegexps, checkIfFailed)
         try {
             for (var _b = __asyncValues(repositoryInfo.octokit.paginate.iterator(listJobs)), _c; _c = yield _b.next(), !_c.done;) {
                 const item = _c.value;
-                for (const job of item.data) {
+                for (const job of item.data.jobs) {
                     core.info(`    The job name: ${job.name}, Conclusion: ${job.conclusion}`);
                     const [jobMatched, jobMatches] = matchInArray(job.name, jobNameRegexps);
                     if (jobMatched) {
