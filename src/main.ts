@@ -790,6 +790,8 @@ async function findPullRequestForRunItem(
  * @param cancelFutureDuplicates - whether to cancel future duplicates
  * @param jobNameRegexps - regexps for job names
  * @param skipEventTypes - array of event names to skip
+ * @param selfPreservation - whether the run will cancel itself if requested
+ * @param selfRunId - my own run id
  * @param workflowRuns - map of workflow runs found
  * @parm maps with string key and array of run items as value. The key might be
  *       * source group id (allDuplicates mode)
@@ -802,6 +804,8 @@ async function filterAndMapWorkflowRunsToGroups(
   cancelFutureDuplicates: boolean,
   jobNameRegexps: string[],
   skipEventTypes: string[],
+  selfRunId: number,
+  selfPreservation: boolean,
   workflowRuns: Map<
     number,
     rest.ActionsListWorkflowRunsResponseWorkflowRunsItem
@@ -815,6 +819,12 @@ async function filterAndMapWorkflowRunsToGroups(
       `\nChecking run number: ${key} RunId: ${runItem.id} Url: ${runItem.url} Status ${runItem.status}` +
         ` Created at ${runItem.created_at}\n`
     )
+    if (runItem.id === selfRunId && selfPreservation) {
+      core.info(
+        `\nI have self-preservation built in. I refuse to cancel myself :)\n`
+      )
+      continue
+    }
     await checkCandidateForCancelling(
       repositoryInfo,
       runItem,
@@ -908,7 +918,7 @@ async function cancelAllRunsInTheGroup(
         await notifyPR(repositoryInfo, selfRunId, pullRequestNumber, reason)
       }
     }
-    core.info(`\nCancelling run: ${runItem}.\n`)
+    core.info(`\nCancelling run: ${runItem.id}.\n`)
     await cancelRun(repositoryInfo, runItem.id)
     cancelledRuns.push(runItem.id)
   }
@@ -999,6 +1009,7 @@ async function cancelTheRunsPerGroup(
  * @param jobNameRegexps - array of regular expressions to match hob names in case of named modes
  * @param skipEventTypes - array of event names that should be skipped
  * @param reason - reason for cancelling
+ * @param selfPreservation - whether the run will cancel itself if requested
  * @return array of canceled workflow run ids
  */
 async function findAndCancelRuns(
@@ -1011,7 +1022,8 @@ async function findAndCancelRuns(
   notifyPRMessageStart: string,
   jobNameRegexps: string[],
   skipEventTypes: string[],
-  reason: string
+  reason: string,
+  selfPreservation: boolean
 ): Promise<number[]> {
   const statusValues = ['queued', 'in_progress']
   const workflowRuns = await getWorkflowRunsMatchingCriteria(
@@ -1027,6 +1039,8 @@ async function findAndCancelRuns(
     cancelFutureDuplicates,
     jobNameRegexps,
     skipEventTypes,
+    selfRunId,
+    selfPreservation,
     workflowRuns
   )
   return await cancelTheRunsPerGroup(
@@ -1105,13 +1119,14 @@ async function getTriggeringRunInfo(
  * @param selfRunId - number of own run id
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
- * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
  * @param notifyPRCancel - whether to notify in PRs about cancelling
  * @param notifyPRCancelMessage - message to send when cancelling the PR (overrides default message
  *        generated automatically)
  * @param notifyPRMessageStart - whether to notify PRs when the action starts
  * @param jobNameRegexps - array of regular expressions to match hob names in case of named modes
  * @param skipEventTypes - array of event names that should be skipped
+ * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
+ * @param selfPreservation - whether the run will cancel itself if requested
  */
 async function performCancelJob(
   repositoryInfo: RepositoryInfo,
@@ -1123,7 +1138,8 @@ async function performCancelJob(
   notifyPRMessageStart: string,
   jobNameRegexps: string[],
   skipEventTypes: string[],
-  cancelFutureDuplicates: boolean
+  cancelFutureDuplicates: boolean,
+  selfPreservation: boolean
 ): Promise<number[]> {
   core.info(
     '\n###################################################################################\n'
@@ -1192,7 +1208,8 @@ async function performCancelJob(
     notifyPRMessageStart,
     jobNameRegexps,
     skipEventTypes,
-    reason
+    reason,
+    selfPreservation
   )
 }
 
@@ -1242,7 +1259,7 @@ function verboseOutput(name: string, value: string): void {
 
 /**
  * Performs sanity check of the parameters passed. Some of the parameter combinations do not work so they
- * are verified and in case od unexpected combination found, approrpriate error is raised.
+ * are verified and in case od unexpected combination found, appropriate error is raised.
  *
  * @param eventName - name of the event to act on
  * @param runId - run id of the triggering event
@@ -1380,6 +1397,8 @@ async function run(): Promise<void> {
   const notifyPRMessageStart = core.getInput('notifyPRMessageStart')
   const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId
   const jobNameRegexpsString = core.getInput('jobNameRegexps')
+  const selfPreservation =
+    (core.getInput('selfPreservation') || 'true').toLowerCase() === 'true'
   const cancelFutureDuplicates =
     (core.getInput('cancelFutureDuplicates') || 'true').toLowerCase() === 'true'
   const jobNameRegexps = jobNameRegexpsString
@@ -1449,7 +1468,8 @@ async function run(): Promise<void> {
     notifyPRMessageStart,
     jobNameRegexps,
     skipEventTypes,
-    cancelFutureDuplicates
+    cancelFutureDuplicates,
+    selfPreservation
   )
 
   verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns))

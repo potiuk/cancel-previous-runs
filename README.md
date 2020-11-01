@@ -115,6 +115,7 @@ If you want a comprehensive solution, you should use the action as follows:
 | `notifyPRMessageStart`   | no       |              | Only for workflow_run events triggered by the PRs. If not empty, it notifies those PRs with the message specified at the start of the workflow - adding the link to the triggered workflow_run.                  |
 | `jobNameRegexps`         | no       |              | An array of job name regexps. Only runs containing any job name matching any of of the regexp in this array are considered for cancelling in `failedJobs` and `namedJobs` and `allDuplicateNamedJobs` modes.     |
 | `skipEventTypes`         | no       |              | Array of event names that should be skipped when cancelling (JSON-encoded string). This might be used in order to skip direct pushes or scheduled events.                                                        |
+| `selfPreservation`       | no       | true         | Do not cancel self.                                                                                                                                                                                              |
 | `workflowFileName`       | no       |              | Name of the workflow file. It can be used if you want to cancel a different workflow than yours.                                                                                                                 |
 
 
@@ -566,6 +567,11 @@ match.
 Note that the match must be identical. If there are two jobs that have a different Branch
 they will both match the same pattern, but they are not considered duplicates.
 
+Also, this is one of the jobs It has also self-preservation turned off.
+This means that in case the job determines that it is itself a duplicate it will cancel itself. That's
+why checking for duplicates of self-workflow should be the last step in the cancelling process.
+
+
 ```yaml
 on:
   push:
@@ -584,7 +590,9 @@ jobs:
           cancelMode: allDuplicatedNamedJobs
           token: ${{ secrets.GITHUB_TOKEN }}
           jobNameRegexps: '["Branch: .* Repo: .* Event: .* "]'
+          selfPreservation: false
           notifyPRCancel: true
+
 ```
 
 
