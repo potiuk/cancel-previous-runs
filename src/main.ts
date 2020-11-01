@@ -53,13 +53,29 @@ interface TriggeringRunInfo {
  * Converts the source of a run object into a string that can be used as map key in maps where we keep
  * arrays of runs per source group
  * @param triggeringRunInfo the object identifying the triggering workflow
- * @returns the unique string id for the source group
+ * @returns the unique string id for the group
  */
-function getSourceGroupId(triggeringRunInfo: TriggeringRunInfo): string {
+function getCommonGroupIdFromTriggeringRunInfo(
+  triggeringRunInfo: TriggeringRunInfo
+): string {
   return (
     `:${triggeringRunInfo.workflowId}:${triggeringRunInfo.headRepo}` +
     `:${triggeringRunInfo.headBranch}:${triggeringRunInfo.eventName}`
   )
+}
+
+/**
+ * Converts the source of a run object into a string that can be used as map key in maps where we keep
+ * arrays of runs per group
+ * @param runItem Item the run item to retrieve the group from
+ * @returns the unique string id for the group
+ */
+function getCommonGroupIdFromRunItem(
+  runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem
+): string {
+  return `:${retrieveWorkflowIdFromUrl(runItem.workflow_url)}:${
+    runItem.head_repository.full_name
+  }:${runItem.head_branch}:${runItem.event}`
 }
 
 /**
@@ -190,6 +206,7 @@ function addWorkflowRunToMap(
     rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
   >
 ): void {
+  core.info(`\nAdding the run: ${runItem.id} to candidates with ${key} key.\n`)
   let arrayOfRuns = mapOfWorkflowRunCandidates.get(key)
   if (arrayOfRuns === undefined) {
     arrayOfRuns = []
@@ -233,7 +250,6 @@ async function jobsMatchingNames(
       const [jobMatched, jobMatches] = matchInArray(job.name, jobNameRegexps)
       if (jobMatched) {
         allMatches.push(...jobMatches)
-        matched = true
         if (checkIfFailed) {
           // Only fail the build if one of the matching jobs fail
           if (job.conclusion === 'failure') {
@@ -241,6 +257,7 @@ async function jobsMatchingNames(
               `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps and it failed.` +
                 ` It will be added to the candidates.`
             )
+            matched = true
           } else {
             core.info(
               `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps but it did not fail. ` +
@@ -253,6 +270,7 @@ async function jobsMatchingNames(
             `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps. ` +
               `It will be added to the candidates.`
           )
+          matched = true
         }
       }
     }
@@ -362,7 +380,7 @@ function checkCandidateForCancellingDuplicate(
       `\nCancel Future Duplicates: Returning run id that might be duplicate or my own run: ${runItem.id}.\n`
     )
     addWorkflowRunToMap(
-      getSourceGroupId(triggeringRunInfo),
+      getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo),
       runItem,
       mapOfWorkflowRunCandidates
     )
@@ -394,12 +412,7 @@ function checkCandidateForCancellingSelf(
   >
 ): void {
   if (runItem.id === triggeringRunInfo.runId) {
-    core.info(`\nAdding the "source" run: ${runItem.id} to candidates.\n`)
-    addWorkflowRunToMap(
-      getSourceGroupId(triggeringRunInfo),
-      runItem,
-      mapOfWorkflowRunCandidates
-    )
+    addWorkflowRunToMap('selfRun', runItem, mapOfWorkflowRunCandidates)
   }
 }
 
@@ -417,9 +430,8 @@ function checkCandidateForAllDuplicates(
     rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
   >
 ): void {
-  core.info(`\nAdding the run: ${runItem.id} to candidates.\n`)
   addWorkflowRunToMap(
-    getSourceGroupId(triggeringRunInfo),
+    getCommonGroupIdFromRunItem(runItem),
     runItem,
     mapOfWorkflowRunCandidates
   )
@@ -453,10 +465,10 @@ async function checkCandidateForCancellingNamedJobs(
   )
   if (matched) {
     core.info(
-      `\nSome jobs have matching names in ${runItem.id}: ${allMatches}. Adding it candidates.\n`
+      `\nSome jobs have matching names in ${runItem.id}: ${allMatches}. Adding it as candidate.\n`
     )
     addWorkflowRunToMap(
-      getSourceGroupId(triggeringRunInfo),
+      'allMatchingNamedJobs',
       runItem,
       mapOfWorkflowRunCandidates
     )
@@ -495,11 +507,7 @@ async function checkCandidateForCancellingFailedJobs(
     core.info(
       `\nSome matching named jobs failed in ${runItem.id}: ${allMatches}. Adding it to candidates.\n`
     )
-    addWorkflowRunToMap(
-      getSourceGroupId(triggeringRunInfo),
-      runItem,
-      mapOfWorkflowRunCandidates
-    )
+    addWorkflowRunToMap('failedJobs', runItem, mapOfWorkflowRunCandidates)
   } else {
     core.info(
       `\nNone of the matching jobs failed in ${runItem.id}. Not adding as candidate to cancel.\n`
