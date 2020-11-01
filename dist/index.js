@@ -2013,17 +2013,23 @@ function findPullRequestForRunItem(repositoryInfo, runItem) {
  * @param cancelFutureDuplicates - whether to cancel future duplicates
  * @param jobNameRegexps - regexps for job names
  * @param skipEventTypes - array of event names to skip
+ * @param selfPreservation - whether the run will cancel itself if requested
+ * @param selfRunId - my own run id
  * @param workflowRuns - map of workflow runs found
  * @parm maps with string key and array of run items as value. The key might be
  *       * source group id (allDuplicates mode)
  *       * matching job name (allDuplicatedMatchingJobNames mode)
  */
-function filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, workflowRuns) {
+function filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns) {
     return __awaiter(this, void 0, void 0, function* () {
         const mapOfWorkflowRunCandidates = new Map();
         for (const [key, runItem] of workflowRuns) {
             core.info(`\nChecking run number: ${key} RunId: ${runItem.id} Url: ${runItem.url} Status ${runItem.status}` +
                 ` Created at ${runItem.created_at}\n`);
+            if (runItem.id === selfRunId && selfPreservation) {
+                core.info(`\nI have self-preservation built in. I refuse to cancel myself :)\n`);
+                continue;
+            }
             yield checkCandidateForCancelling(repositoryInfo, runItem, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, mapOfWorkflowRunCandidates);
         }
         return mapOfWorkflowRunCandidates;
@@ -2083,7 +2089,7 @@ function cancelAllRunsInTheGroup(repositoryInfo, sortedRunItems, notifyPRCancel,
                     yield notifyPR(repositoryInfo, selfRunId, pullRequestNumber, reason);
                 }
             }
-            core.info(`\nCancelling run: ${runItem}.\n`);
+            core.info(`\nCancelling run: ${runItem.id}.\n`);
             yield cancelRun(repositoryInfo, runItem.id);
             cancelledRuns.push(runItem.id);
         }
@@ -2143,13 +2149,14 @@ function cancelTheRunsPerGroup(repositoryInfo, mapOfWorkflowRunCandidatesCandida
  * @param jobNameRegexps - array of regular expressions to match hob names in case of named modes
  * @param skipEventTypes - array of event names that should be skipped
  * @param reason - reason for cancelling
+ * @param selfPreservation - whether the run will cancel itself if requested
  * @return array of canceled workflow run ids
  */
-function findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason) {
+function findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation) {
     return __awaiter(this, void 0, void 0, function* () {
         const statusValues = ['queued', 'in_progress'];
         const workflowRuns = yield getWorkflowRunsMatchingCriteria(repositoryInfo, statusValues, cancelMode, triggeringRunInfo);
-        const mapOfWorkflowRunCandidatesCandidatesToCancel = yield filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, workflowRuns);
+        const mapOfWorkflowRunCandidatesCandidatesToCancel = yield filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns);
         return yield cancelTheRunsPerGroup(repositoryInfo, mapOfWorkflowRunCandidatesCandidatesToCancel, cancelMode, cancelFutureDuplicates, notifyPRCancel, selfRunId, reason);
     });
 }
@@ -2207,15 +2214,16 @@ function getTriggeringRunInfo(repositoryInfo, runId) {
  * @param selfRunId - number of own run id
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
- * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
  * @param notifyPRCancel - whether to notify in PRs about cancelling
  * @param notifyPRCancelMessage - message to send when cancelling the PR (overrides default message
  *        generated automatically)
  * @param notifyPRMessageStart - whether to notify PRs when the action starts
  * @param jobNameRegexps - array of regular expressions to match hob names in case of named modes
  * @param skipEventTypes - array of event names that should be skipped
+ * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
+ * @param selfPreservation - whether the run will cancel itself if requested
  */
-function performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates) {
+function performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation) {
     return __awaiter(this, void 0, void 0, function* () {
         core.info('\n###################################################################################\n');
         core.info(`All parameters: owner: ${repositoryInfo.owner}, repo: ${repositoryInfo.repo}, ` +
@@ -2259,7 +2267,7 @@ function performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMo
             throw Error(`Wrong cancel mode ${cancelMode}! Please correct it.`);
         }
         core.info('\n###################################################################################\n');
-        return yield findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason);
+        return yield findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation);
     });
 }
 /**
@@ -2304,7 +2312,7 @@ function verboseOutput(name, value) {
 }
 /**
  * Performs sanity check of the parameters passed. Some of the parameter combinations do not work so they
- * are verified and in case od unexpected combination found, approrpriate error is raised.
+ * are verified and in case od unexpected combination found, appropriate error is raised.
  *
  * @param eventName - name of the event to act on
  * @param runId - run id of the triggering event
@@ -2401,6 +2409,7 @@ function run() {
         const notifyPRMessageStart = core.getInput('notifyPRMessageStart');
         const sourceRunId = parseInt(core.getInput('sourceRunId')) || selfRunId;
         const jobNameRegexpsString = core.getInput('jobNameRegexps');
+        const selfPreservation = (core.getInput('selfPreservation') || 'true').toLowerCase() === 'true';
         const cancelFutureDuplicates = (core.getInput('cancelFutureDuplicates') || 'true').toLowerCase() === 'true';
         const jobNameRegexps = jobNameRegexpsString
             ? JSON.parse(jobNameRegexpsString)
@@ -2427,7 +2436,7 @@ function run() {
         const triggeringRunInfo = yield getTriggeringRunInfo(repositoryInfo, sourceRunId);
         produceBasicOutputs(triggeringRunInfo);
         yield notifyActionStart(repositoryInfo, triggeringRunInfo, selfRunId, notifyPRMessageStart);
-        const cancelledRuns = yield performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates);
+        const cancelledRuns = yield performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation);
         verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns));
     });
 }

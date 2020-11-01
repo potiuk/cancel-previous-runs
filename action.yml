@@ -46,6 +46,11 @@ inputs:
       In case of duplicate canceling, cancel also future duplicates leaving only the "freshest" running
       job and not all the future jobs. By default it is set to true.
     required: false
+  selfPreservation:
+    description: |
+      Do not cancel your own run. There are cases where selfPreservation should be disabled but it is
+      enabled by default. You can disable it by setting 'false' as value.
+    required: false
   jobNameRegexps:
     description: |
       Array of job name regexps (JSON-encoded string). Used by `failedJobs` and `namedJobs` cancel modes
