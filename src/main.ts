@@ -21,21 +21,8 @@ enum CancelMode {
   ALL_DUPLICATES = 'allDuplicates',
   SELF = 'self',
   FAILED_JOBS = 'failedJobs',
-  NAMED_JOBS = 'namedJobs'
-}
-
-/**
- * Stores information uniquely identifying the run by it's triggering source:
- * It is the workflow id, Head Repo and Branch the change originates from and event name that originates it.
- *
- * All Runs coming from the same Pull Request share the same Source Group. Also all pushes to master
- * share the same Source Group
- */
-interface WorkflowRunSourceGroup {
-  workflowId: number | string
-  headRepo: string
-  headBranch: string
-  eventName: string
+  NAMED_JOBS = 'namedJobs',
+  ALL_DUPLICATED_NAMED_JOBS = 'allDuplicatedNamedJobs'
 }
 
 /**
@@ -51,7 +38,9 @@ interface RepositoryInfo {
 /**
  * Stores information about the workflow info that triggered the current workflow.
  */
-interface TriggeringWorkflowInfo {
+interface TriggeringRunInfo {
+  workflowId: number
+  runId: number
   headRepo: string
   headBranch: string
   headSha: string
@@ -63,11 +52,14 @@ interface TriggeringWorkflowInfo {
 /**
  * Converts the source of a run object into a string that can be used as map key in maps where we keep
  * arrays of runs per source group
- * @param sourceGroup the object identifying the source of the run (Pull Request, Master Push)
+ * @param triggeringRunInfo the object identifying the triggering workflow
  * @returns the unique string id for the source group
  */
-function getSourceGroupId(sourceGroup: WorkflowRunSourceGroup): string {
-  return `:${sourceGroup.workflowId}:${sourceGroup.headRepo}:${sourceGroup.headBranch}:${sourceGroup.eventName}`
+function getSourceGroupId(triggeringRunInfo: TriggeringRunInfo): string {
+  return (
+    `:${triggeringRunInfo.workflowId}:${triggeringRunInfo.headRepo}` +
+    `:${triggeringRunInfo.headBranch}:${triggeringRunInfo.eventName}`
+  )
 }
 
 /**
@@ -76,22 +68,22 @@ function getSourceGroupId(sourceGroup: WorkflowRunSourceGroup): string {
  *
  * @param repositoryInfo - information about the repository used
  * @param status - status of the run that we are querying for
- * @param mySourceGroup - source group of the originating run
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @return query parameters merged with the listWorkflowRuns criteria
  */
 function createListRunsQueryRunsSameSource(
   repositoryInfo: RepositoryInfo,
   status: string,
-  mySourceGroup: WorkflowRunSourceGroup
+  triggeringRunInfo: TriggeringRunInfo
 ): rest.RequestOptions {
   const request = {
     owner: repositoryInfo.owner,
     repo: repositoryInfo.repo,
     // eslint-disable-next-line @typescript-eslint/camelcase
-    workflow_id: mySourceGroup.workflowId,
+    workflow_id: triggeringRunInfo.workflowId,
     status,
-    branch: mySourceGroup.headBranch,
-    event: mySourceGroup.eventName
+    branch: triggeringRunInfo.headBranch,
+    event: triggeringRunInfo.eventName
   }
   return repositoryInfo.octokit.actions.listWorkflowRuns.endpoint.merge(request)
 }
@@ -99,24 +91,22 @@ function createListRunsQueryRunsSameSource(
  * Creates query parameters selecting only specific run Id.
  * @param repositoryInfo - information about the repository used
  * @param status - status of the run that we are querying for
- * @param workflowId - Id of the workflow to retrieve
- * @param runId - run Id to retrieve
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @return query parameters merged with the listWorkflowRuns criteria
  */
 function createListRunsQuerySpecificRunId(
   repositoryInfo: RepositoryInfo,
   status: string,
-  workflowId: number | string,
-  runId: number
+  triggeringRunInfo: TriggeringRunInfo
 ): rest.RequestOptions {
   const request = {
     owner: repositoryInfo.owner,
     repo: repositoryInfo.repo,
     // eslint-disable-next-line @typescript-eslint/camelcase
-    workflow_id: workflowId,
+    workflow_id: triggeringRunInfo.workflowId,
     status,
     // eslint-disable-next-line @typescript-eslint/camelcase
-    run_id: runId.toString()
+    run_id: triggeringRunInfo.runId.toString()
   }
   return repositoryInfo.octokit.actions.listWorkflowRuns.endpoint.merge(request)
 }
@@ -168,15 +158,44 @@ function createJobsForWorkflowRunQuery(
  * Returns true if the string matches any of the regexps in array of regexps
  * @param stringToMatch string to match
  * @param regexps array of regexp to match the string against
- * @return true if there is a match
+ * @return array of [matched (boolean), [array of matched strings]]
  */
-function matchInArray(stringToMatch: string, regexps: string[]): boolean {
+function matchInArray(
+  stringToMatch: string,
+  regexps: string[]
+): [boolean, string[]] {
+  let matched = false
+  const allMatches: string[] = []
   for (const regexp of regexps) {
-    if (stringToMatch.match(regexp)) {
-      return true
+    const match = stringToMatch.match(regexp)
+    if (match) {
+      matched = true
+      allMatches.push(match[0])
     }
   }
-  return false
+  return [matched, allMatches]
+}
+
+/**
+ * Adds workflow run to the array in the map indexed by key.
+ * @param key key to use
+ * @param runItem run Item to add
+ * @param mapOfWorkflowRunCandidates map of workflow runs to add the run item to
+ */
+function addWorkflowRunToMap(
+  key: string,
+  runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): void {
+  let arrayOfRuns = mapOfWorkflowRunCandidates.get(key)
+  if (arrayOfRuns === undefined) {
+    arrayOfRuns = []
+    mapOfWorkflowRunCandidates.set(key, arrayOfRuns)
+  }
+  arrayOfRuns.push(runItem)
 }
 
 /**
@@ -188,14 +207,14 @@ function matchInArray(stringToMatch: string, regexps: string[]): boolean {
  * @param runId - Id of the run to retrieve jobs for
  * @param jobNameRegexps - array of job name regexps
  * @param checkIfFailed - whether to check the 'failed' status of matched jobs
- * @return true if there is a match
+ * @return array of [matched (boolean), array of matches]
  */
 async function jobsMatchingNames(
   repositoryInfo: RepositoryInfo,
   runId: number,
   jobNameRegexps: string[],
   checkIfFailed: boolean
-): Promise<boolean> {
+): Promise<[boolean, string[]]> {
   const listJobs = createJobsForWorkflowRunQuery(repositoryInfo, runId)
   if (checkIfFailed) {
     core.info(
@@ -206,18 +225,22 @@ async function jobsMatchingNames(
       `\nChecking if runId ${runId} has job names matching any of the ${jobNameRegexps}\n`
     )
   }
+  const allMatches: string[] = []
+  let matched = false
   for await (const item of repositoryInfo.octokit.paginate.iterator(listJobs)) {
-    for (const job of item.data.jobs) {
+    for (const job of item.data) {
       core.info(`    The job name: ${job.name}, Conclusion: ${job.conclusion}`)
-      if (matchInArray(job.name, jobNameRegexps)) {
+      const [jobMatched, jobMatches] = matchInArray(job.name, jobNameRegexps)
+      if (jobMatched) {
+        allMatches.push(...jobMatches)
+        matched = true
         if (checkIfFailed) {
           // Only fail the build if one of the matching jobs fail
           if (job.conclusion === 'failure') {
             core.info(
               `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps and it failed.` +
-                ` Cancelling run.`
+                ` It will be added to the candidates.`
             )
-            return true
           } else {
             core.info(
               `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps but it did not fail. ` +
@@ -227,14 +250,14 @@ async function jobsMatchingNames(
         } else {
           // Fail the build if any of the job names match
           core.info(
-            `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps. Cancelling run.`
+            `    The Job ${job.name} matches one of the ${jobNameRegexps} regexps. ` +
+              `It will be added to the candidates.`
           )
-          return true
         }
       }
     }
   }
-  return false
+  return [matched, allMatches]
 }
 
 /**
@@ -310,61 +333,96 @@ async function getWorkflowRuns(
 /**
  * True if the request is candidate for cancelling in case of duplicate deletion
  * @param runItem item to check
- * @param headRepo head Repo that we are checking against
  * @param cancelFutureDuplicates whether future duplicates are being cancelled
- * @param sourceRunId the source Run Id that originates the request
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
  * @return true if we determine that the run Id should be cancelled
  */
-function isCandidateForCancellingDuplicate(
+function checkCandidateForCancellingDuplicate(
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
-  headRepo: string,
   cancelFutureDuplicates: boolean,
-  sourceRunId: number
-): boolean {
+  triggeringRunInfo: TriggeringRunInfo,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): void {
   const runHeadRepo = runItem.head_repository.full_name
-  if (headRepo !== undefined && runHeadRepo !== headRepo) {
+  if (
+    triggeringRunInfo.headRepo !== undefined &&
+    runHeadRepo !== triggeringRunInfo.headRepo
+  ) {
     core.info(
       `\nThe run ${runItem.id} is from a different ` +
-        `repo: ${runHeadRepo} (expected ${headRepo}). Not cancelling it\n`
+        `repo: ${runHeadRepo} (expected ${triggeringRunInfo.headRepo}). Not adding as candidate to cancel.\n`
     )
-    return false
   }
   if (cancelFutureDuplicates) {
     core.info(
       `\nCancel Future Duplicates: Returning run id that might be duplicate or my own run: ${runItem.id}.\n`
     )
-    return true
+    addWorkflowRunToMap(
+      getSourceGroupId(triggeringRunInfo),
+      runItem,
+      mapOfWorkflowRunCandidates
+    )
   } else {
-    if (runItem.id === sourceRunId) {
+    if (runItem.id === triggeringRunInfo.runId) {
       core.info(`\nThis is my own run ${runItem.id}. Not returning myself!\n`)
-      return false
-    } else if (runItem.id > sourceRunId) {
+    } else if (runItem.id > triggeringRunInfo.runId) {
       core.info(
-        `\nThe run ${runItem.id} is started later than my own run ${sourceRunId}. Not returning it\n`
+        `\nThe run ${runItem.id} is started later than my own ` +
+          `run ${triggeringRunInfo.runId}. Not returning it\n`
       )
-      return false
     }
     core.info(`\nFound duplicate of my own run: ${runItem.id}.\n`)
-    return true
   }
 }
 
 /**
- * Should the run is candidate for cancelling in SELF cancelling mode?
+ * Should the run be candidate for cancelling in SELF cancelling mode?
  * @param runItem run item
- * @param sourceRunId source run id
- * @return true if the run item is self
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
  */
-function isCandidateForCancellingSelf(
+function checkCandidateForCancellingSelf(
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
-  sourceRunId: number
-): boolean {
-  if (runItem.id === sourceRunId) {
-    core.info(`\nReturning the "source" run: ${runItem.id}.\n`)
-    return true
-  } else {
-    return false
+  triggeringRunInfo: TriggeringRunInfo,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): void {
+  if (runItem.id === triggeringRunInfo.runId) {
+    core.info(`\nAdding the "source" run: ${runItem.id} to candidates.\n`)
+    addWorkflowRunToMap(
+      getSourceGroupId(triggeringRunInfo),
+      runItem,
+      mapOfWorkflowRunCandidates
+    )
   }
+}
+
+/**
+ * Should the run be candidate for cancelling of all duplicates
+ * @param runItem run item
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
+ */
+function checkCandidateForAllDuplicates(
+  runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
+  triggeringRunInfo: TriggeringRunInfo,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): void {
+  core.info(`\nAdding the run: ${runItem.id} to candidates.\n`)
+  addWorkflowRunToMap(
+    getSourceGroupId(triggeringRunInfo),
+    runItem,
+    mapOfWorkflowRunCandidates
+  )
 }
 
 /**
@@ -372,24 +430,38 @@ function isCandidateForCancellingSelf(
  * @param repositoryInfo - information about the repository used
  * @param runItem run item
  * @param jobNamesRegexps array of regexps to match job names against
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
  * @return true if the run item contains jobs with names matching the pattern
  */
-async function isCandidateForCancellingNamedJobs(
+async function checkCandidateForCancellingNamedJobs(
   repositoryInfo: RepositoryInfo,
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
-  jobNamesRegexps: string[]
-): Promise<boolean> {
+  jobNamesRegexps: string[],
+  triggeringRunInfo: TriggeringRunInfo,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): Promise<void> {
   // Cancel all jobs that have failed jobs (no matter when started)
-  if (
-    await jobsMatchingNames(repositoryInfo, runItem.id, jobNamesRegexps, false)
-  ) {
+  const [matched, allMatches] = await jobsMatchingNames(
+    repositoryInfo,
+    runItem.id,
+    jobNamesRegexps,
+    false
+  )
+  if (matched) {
     core.info(
-      `\nSome jobs have matching names in ${runItem.id} . Returning it.\n`
+      `\nSome jobs have matching names in ${runItem.id}: ${allMatches}. Adding it candidates.\n`
     )
-    return true
+    addWorkflowRunToMap(
+      getSourceGroupId(triggeringRunInfo),
+      runItem,
+      mapOfWorkflowRunCandidates
+    )
   } else {
-    core.info(`\nNone of the jobs match name in ${runItem.id}. Returning it.\n`)
-    return false
+    core.info(`\nNone of the jobs match name in ${runItem.id}.\n`)
   }
 }
 
@@ -398,99 +470,165 @@ async function isCandidateForCancellingNamedJobs(
  * @param repositoryInfo - information about the repository used
  * @param runItem run item
  * @param jobNamesRegexps array of regexps to match job names against
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
  * @return true if the run item contains failed jobs with names matching the pattern
  */
-async function isCandidateForCancellingFailedJobs(
+async function checkCandidateForCancellingFailedJobs(
   repositoryInfo: RepositoryInfo,
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
-  jobNamesRegexps: string[]
-): Promise<boolean> {
+  jobNamesRegexps: string[],
+  triggeringRunInfo: TriggeringRunInfo,
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): Promise<void> {
   // Cancel all jobs that have failed jobs (no matter when started)
-  if (
-    await jobsMatchingNames(repositoryInfo, runItem.id, jobNamesRegexps, true)
-  ) {
+  const [matched, allMatches] = await jobsMatchingNames(
+    repositoryInfo,
+    runItem.id,
+    jobNamesRegexps,
+    true
+  )
+  if (matched) {
     core.info(
-      `\nSome matching named jobs failed in ${runItem.id} . Cancelling it.\n`
+      `\nSome matching named jobs failed in ${runItem.id}: ${allMatches}. Adding it to candidates.\n`
     )
-    return true
+    addWorkflowRunToMap(
+      getSourceGroupId(triggeringRunInfo),
+      runItem,
+      mapOfWorkflowRunCandidates
+    )
   } else {
     core.info(
-      `\nNone of the matching jobs failed in ${runItem.id}. Not cancelling it.\n`
+      `\nNone of the matching jobs failed in ${runItem.id}. Not adding as candidate to cancel.\n`
     )
-    return false
   }
 }
 
 /**
- * Determines whether the run is candidate to be cancelled depending on the mode used
+ * Checks if the run is candidate for duplicate cancelling of named jobs. It adds it to the map
+ * including the match as a key for duplicate detection.
  * @param repositoryInfo - information about the repository used
  * @param runItem - run item
- * @param headRepo - head repository
- * @param cancelMode - cancel mode
- * @param cancelFutureDuplicates - whether to cancel future duplicates
- * @param sourceRunId - what is the source run id
- * @param jobNamesRegexps - what are the regexps for job names
- * @param skipEventTypes - which events should be skipped
- * @return true if the run id is candidate for cancelling
+ * @param jobNamesRegexps - array of regexps to match job names against
+ * @param mapOfWorkflowRunCandidates - map of runs to update
  */
-async function isCandidateForCancelling(
+async function checkCandidateForDuplicateNamedJobs(
   repositoryInfo: RepositoryInfo,
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
-  headRepo: string,
+  jobNamesRegexps: string[],
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): Promise<void> {
+  const [matched, allMatches] = await jobsMatchingNames(
+    repositoryInfo,
+    runItem.id,
+    jobNamesRegexps,
+    false
+  )
+  if (matched) {
+    for (const match of allMatches) {
+      // This is the only case where we are not using source group to cancelling candidates but
+      // the match of job names
+      addWorkflowRunToMap(match, runItem, mapOfWorkflowRunCandidates)
+    }
+  }
+}
+
+/**
+ * Determines whether the run is candidate to be cancelled depending on the mode used and add it to the map
+ * of workflow names if it is.
+ * @param repositoryInfo - information about the repository used
+ * @param runItem - run item
+ * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param cancelMode - cancel mode
+ * @param cancelFutureDuplicates - whether to cancel future duplicates
+ * @param jobNamesRegexps - what are the regexps for job names
+ * @param skipEventTypes - which events should be skipped
+ * @param mapOfWorkflowRunCandidates - map of workflow runs to add candidates to
+ */
+async function checkCandidateForCancelling(
+  repositoryInfo: RepositoryInfo,
+  runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem,
+  triggeringRunInfo: TriggeringRunInfo,
   cancelMode: CancelMode,
   cancelFutureDuplicates: boolean,
-  sourceRunId: number,
   jobNamesRegexps: string[],
-  skipEventTypes: string[]
-): Promise<boolean> {
+  skipEventTypes: string[],
+  mapOfWorkflowRunCandidates: Map<
+    string,
+    rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
+  >
+): Promise<void> {
   if ('completed' === runItem.status.toString()) {
-    core.info(`\nThe run ${runItem.id} is completed. Not cancelling it.\n`)
-    return false
+    core.info(
+      `\nThe run ${runItem.id} is completed. Not adding as candidate to cancel.\n`
+    )
+    return
   }
   if (!CANCELLABLE_EVENT_TYPES.includes(runItem.event.toString())) {
     core.info(
       `\nThe run ${runItem.id} is (${runItem.event} event - not ` +
-        `in ${CANCELLABLE_EVENT_TYPES}). Not cancelling it.\n`
+        `in ${CANCELLABLE_EVENT_TYPES}). Not adding as candidate to cancel.\n`
     )
-    return false
+    return
   }
   if (skipEventTypes.includes(runItem.event.toString())) {
     core.info(
       `\nThe run ${runItem.id} is (${runItem.event} event - ` +
-        `it is in skipEventTypes ${skipEventTypes}). Not cancelling it.\n`
+        `it is in skipEventTypes ${skipEventTypes}). Not adding as candidate to cancel.\n`
     )
-    return false
+    return
   }
   if (cancelMode === CancelMode.FAILED_JOBS) {
-    return await isCandidateForCancellingFailedJobs(
+    await checkCandidateForCancellingFailedJobs(
       repositoryInfo,
       runItem,
-      jobNamesRegexps
+      jobNamesRegexps,
+      triggeringRunInfo,
+      mapOfWorkflowRunCandidates
     )
   } else if (cancelMode === CancelMode.NAMED_JOBS) {
-    return await isCandidateForCancellingNamedJobs(
+    await checkCandidateForCancellingNamedJobs(
       repositoryInfo,
       runItem,
-      jobNamesRegexps
+      jobNamesRegexps,
+      triggeringRunInfo,
+      mapOfWorkflowRunCandidates
     )
   } else if (cancelMode === CancelMode.SELF) {
-    return isCandidateForCancellingSelf(runItem, sourceRunId)
-  } else if (cancelMode === CancelMode.DUPLICATES) {
-    return isCandidateForCancellingDuplicate(
+    checkCandidateForCancellingSelf(
       runItem,
-      headRepo,
+      triggeringRunInfo,
+      mapOfWorkflowRunCandidates
+    )
+  } else if (cancelMode === CancelMode.DUPLICATES) {
+    checkCandidateForCancellingDuplicate(
+      runItem,
       cancelFutureDuplicates,
-      sourceRunId
+      triggeringRunInfo,
+      mapOfWorkflowRunCandidates
     )
   } else if (cancelMode === CancelMode.ALL_DUPLICATES) {
-    core.info(
-      `Returning candidate ${runItem.id} for "all_duplicates" cancelling.`
+    checkCandidateForAllDuplicates(
+      runItem,
+      triggeringRunInfo,
+      mapOfWorkflowRunCandidates
     )
-    return true
+  } else if (cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS) {
+    await checkCandidateForDuplicateNamedJobs(
+      repositoryInfo,
+      runItem,
+      jobNamesRegexps,
+      mapOfWorkflowRunCandidates
+    )
+    return
   } else {
-    throw Error(
-      `\nWrong cancel mode ${cancelMode}! This should never happen.\n`
-    )
+    throw Error(`\nWrong cancel mode ${cancelMode}! Please correct it!.\n`)
   }
 }
 
@@ -524,25 +662,14 @@ async function cancelRun(
  * @param repositoryInfo - information about the repository used
  * @param statusValues - status values we want to check
  * @param cancelMode - cancel mode to use
- * @param sourceWorkflowId - source workflow id
- * @param sourceRunId - source run id
- * @param sourceEventName - name of the source event
- * @param mySourceGroup - source of the run that originated it
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @return map of the run items matching grouped by workflow run id
  */
 async function getWorkflowRunsMatchingCriteria(
   repositoryInfo: RepositoryInfo,
   statusValues: string[],
-  cancelMode:
-    | CancelMode
-    | CancelMode.DUPLICATES
-    | CancelMode.ALL_DUPLICATES
-    | CancelMode.FAILED_JOBS
-    | CancelMode.NAMED_JOBS,
-  sourceWorkflowId: number | string,
-  sourceRunId: number,
-  sourceEventName: string,
-  mySourceGroup: WorkflowRunSourceGroup
+  cancelMode: CancelMode,
+  triggeringRunInfo: TriggeringRunInfo
 ): Promise<Map<number, rest.ActionsListWorkflowRunsResponseWorkflowRunsItem>> {
   return await getWorkflowRuns(
     repositoryInfo,
@@ -552,43 +679,43 @@ async function getWorkflowRunsMatchingCriteria(
       if (cancelMode === CancelMode.SELF) {
         core.info(
           `\nFinding runs for my own run: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-            `Workflow ID:${sourceWorkflowId}, Source Run id: ${sourceRunId}\n`
+            `Workflow ID:${triggeringRunInfo.workflowId},` +
+            `Source Run id: ${triggeringRunInfo.runId}\n`
         )
         return createListRunsQuerySpecificRunId(
           repositoryInfo,
           status,
-          sourceWorkflowId,
-          sourceRunId
+          triggeringRunInfo
         )
       } else if (
         cancelMode === CancelMode.FAILED_JOBS ||
         cancelMode === CancelMode.NAMED_JOBS ||
-        cancelMode === CancelMode.ALL_DUPLICATES
+        cancelMode === CancelMode.ALL_DUPLICATES ||
+        cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS
       ) {
         core.info(
           `\nFinding runs for all runs: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-            `Status: ${status} Workflow ID:${sourceWorkflowId}\n`
+            `Status: ${status} Workflow ID:${triggeringRunInfo.workflowId}\n`
         )
         return createListRunsQueryAllRuns(
           repositoryInfo,
           status,
-          sourceWorkflowId
+          triggeringRunInfo.workflowId
         )
       } else if (cancelMode === CancelMode.DUPLICATES) {
         core.info(
           `\nFinding duplicate runs: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-            `Status: ${status} Workflow ID:${sourceWorkflowId}, Head Branch: ${mySourceGroup.headBranch},` +
-            `Event name: ${sourceEventName}\n`
+            `Status: ${status} Workflow ID:${triggeringRunInfo.workflowId}, ` +
+            `Head Branch: ${triggeringRunInfo.headBranch},` +
+            `Event name: ${triggeringRunInfo.eventName}\n`
         )
         return createListRunsQueryRunsSameSource(
           repositoryInfo,
           status,
-          mySourceGroup
+          triggeringRunInfo
         )
       } else {
-        throw Error(
-          `\nWrong cancel mode ${cancelMode}! This should never happen.\n`
-        )
+        throw Error(`\nWrong cancel mode ${cancelMode}! Please correct it.\n`)
       }
     }
   )
@@ -653,26 +780,26 @@ async function findPullRequestForRunItem(
 }
 
 /**
- * Maps found workflow runs into groups - filters out the workflows that are not eligible for canceling
+ * Maps found workflow runs into groups - filters out the workflows that are not eligible for cancelling
  * (depends on cancel Mode) and assigns each workflow to groups - where workflow runs from the
  * same group are put together in one array - in a map indexed by the source group id.
  *
  * @param repositoryInfo - information about the repository used
- * @param headRepo - head repository the event comes from
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode to use
  * @param cancelFutureDuplicates - whether to cancel future duplicates
- * @param sourceRunId - source run id for the run
  * @param jobNameRegexps - regexps for job names
  * @param skipEventTypes - array of event names to skip
  * @param workflowRuns - map of workflow runs found
- * @parm map where key is the source group id and value is array of workflow run item candidates to cancel
+ * @parm maps with string key and array of run items as value. The key might be
+ *       * source group id (allDuplicates mode)
+ *       * matching job name (allDuplicatedMatchingJobNames mode)
  */
 async function filterAndMapWorkflowRunsToGroups(
   repositoryInfo: RepositoryInfo,
-  headRepo: string,
+  triggeringRunInfo: TriggeringRunInfo,
   cancelMode: CancelMode,
   cancelFutureDuplicates: boolean,
-  sourceRunId: number,
   jobNameRegexps: string[],
   skipEventTypes: string[],
   workflowRuns: Map<
@@ -685,40 +812,19 @@ async function filterAndMapWorkflowRunsToGroups(
   const mapOfWorkflowRunCandidates = new Map()
   for (const [key, runItem] of workflowRuns) {
     core.info(
-      `\nChecking run number: ${key}, RunId: ${runItem.id}, Url: ${runItem.url}. Status ${runItem.status},` +
+      `\nChecking run number: ${key} RunId: ${runItem.id} Url: ${runItem.url} Status ${runItem.status}` +
         ` Created at ${runItem.created_at}\n`
     )
-    if (
-      await isCandidateForCancelling(
-        repositoryInfo,
-        runItem,
-        headRepo,
-        cancelMode,
-        cancelFutureDuplicates,
-        sourceRunId,
-        jobNameRegexps,
-        skipEventTypes
-      )
-    ) {
-      const candidateSourceGroup: WorkflowRunSourceGroup = {
-        workflowId: retrieveWorkflowIdFromUrl(runItem.workflow_url),
-        headBranch: runItem.head_branch,
-        headRepo: runItem.head_repository.full_name,
-        eventName: runItem.event
-      }
-      const sourceGroupId = getSourceGroupId(candidateSourceGroup)
-      let workflowRunArray:
-        | rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
-        | undefined = mapOfWorkflowRunCandidates.get(sourceGroupId)
-      if (workflowRunArray === undefined) {
-        workflowRunArray = []
-        mapOfWorkflowRunCandidates.set(sourceGroupId, workflowRunArray)
-      }
-      core.info(
-        `The candidate ${runItem.id} has been added to ${sourceGroupId} group of candidates`
-      )
-      workflowRunArray.push(runItem)
-    }
+    await checkCandidateForCancelling(
+      repositoryInfo,
+      runItem,
+      triggeringRunInfo,
+      cancelMode,
+      cancelFutureDuplicates,
+      jobNameRegexps,
+      skipEventTypes,
+      mapOfWorkflowRunCandidates
+    )
   }
   return mapOfWorkflowRunCandidates
 }
@@ -749,7 +855,7 @@ async function addCommentToPullRequest(
  * @param repositoryInfo - information about the repository used
  * @param selfRunId - my own run id
  * @param pullRequestNumber - number of pull request
- * @param reason reason for canceling
+ * @param reason reason for cancelling
  */
 async function notifyPR(
   repositoryInfo: RepositoryInfo,
@@ -774,9 +880,9 @@ async function notifyPR(
  * @param notifyPRCancel - whether to notify the PR when cancelling
  * @param selfRunId - what is the self run id
  * @param sourceGroupId - what is the source group id
- * @param reason - reason for canceling
+ * @param reason - reason for cancelling
  */
-async function cancelAllRunsInTheSourceGroup(
+async function cancelAllRunsInTheGroup(
   repositoryInfo: RepositoryInfo,
   sortedRunItems: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[],
   notifyPRCancel: boolean,
@@ -813,21 +919,21 @@ async function cancelAllRunsInTheSourceGroup(
 }
 
 /**
- * Cancels found runs in a smart way. It takes all the found runs group by the source group, sorts them
- * descending according to create date in each of the source groups and cancels them in that order -
- * optionally skipping the first found run in each source group in case of duplicates.
+ * Cancels found runs per group. It takes all the found groups, sorts them
+ * descending according to create date in each of the groups and cancels them in that order -
+ * optionally skipping the first found run in each source group in case of duplicate cancelling.
  *
  * @param repositoryInfo - information about the repository used
- * @param mapOfWorkflowRunsCandidatesToCancel map of all workflow run candidates
+ * @param mapOfWorkflowRunCandidatesCandidatesToCancel map of all workflow run candidates
  * @param cancelMode - cancel mode
  * @param cancelFutureDuplicates - whether to cancel future duplicates
  * @param notifyPRCancel - whether to notify PRs with comments
  * @param selfRunId - self run Id
- * @param reason - reason for canceling
+ * @param reason - reason for cancelling
  */
 async function cancelTheRunsPerGroup(
   repositoryInfo: RepositoryInfo,
-  mapOfWorkflowRunsCandidatesToCancel: Map<
+  mapOfWorkflowRunCandidatesCandidatesToCancel: Map<
     string,
     rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
   >,
@@ -839,9 +945,9 @@ async function cancelTheRunsPerGroup(
 ): Promise<number[]> {
   const cancelledRuns: number[] = []
   for (const [
-    sourceGroupId,
+    groupId,
     candidatesArray
-  ] of mapOfWorkflowRunsCandidatesToCancel) {
+  ] of mapOfWorkflowRunCandidatesCandidatesToCancel) {
     // Sort from most recent date - this way we always kill current one at the end (if we kill it at all)
     const sortedRunItems = candidatesArray.sort((runItem1, runItem2) =>
       runItem2.created_at.localeCompare(runItem1.created_at)
@@ -849,31 +955,32 @@ async function cancelTheRunsPerGroup(
     if (sortedRunItems.length > 0) {
       if (
         (cancelMode === CancelMode.DUPLICATES && cancelFutureDuplicates) ||
-        cancelMode === CancelMode.ALL_DUPLICATES
+        cancelMode === CancelMode.ALL_DUPLICATES ||
+        cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS
       ) {
         core.info(
           `\nSkipping the first run (${sortedRunItems[0].id}) of all the matching ` +
-            `duplicates for '${sourceGroupId}'. This one we are going to leave in peace!\n`
+            `duplicates for '${groupId}'. This one we are going to leave in peace!\n`
         )
         sortedRunItems.shift()
       }
       if (sortedRunItems.length === 0) {
-        core.info(`\nNo duplicates to cancel for ${sourceGroupId}!\n`)
+        core.info(`\nNo duplicates to cancel for ${groupId}!\n`)
         continue
       }
       cancelledRuns.push(
-        ...(await cancelAllRunsInTheSourceGroup(
+        ...(await cancelAllRunsInTheGroup(
           repositoryInfo,
           sortedRunItems,
           notifyPRCancel,
           selfRunId,
-          sourceGroupId,
+          groupId,
           reason
         ))
       )
     } else {
       core.info(
-        `\n######  There are no runs to cancel for ${sourceGroupId} ##########\n`
+        `\n######  There are no runs to cancel for ${groupId} ##########\n`
       )
     }
   }
@@ -884,14 +991,7 @@ async function cancelTheRunsPerGroup(
  * Find and cancels runs based on the criteria chosen.
  * @param repositoryInfo - information about the repository used
  * @param selfRunId - number of own run id
- * @param sourceWorkflowId - source workflow id that triggered the workflow
- *        (might be different than self for workflow_run)
- * @param sourceRunId - source run id that triggered the workflow
- *        (might be different than self for workflow_run)
- * @param headRepo - head repository that triggered the workflow (repo from which PR came)
- * @param headBranch - branch of the PR that triggered the workflow (when it is triggered by PR)
- * @param sourceEventName - name of the event that triggered the workflow
- *        (different than self event name for workflow_run)
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
  * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
  * @param notifyPRCancel - whether to notify in PRs about cancelling
@@ -904,11 +1004,7 @@ async function cancelTheRunsPerGroup(
 async function findAndCancelRuns(
   repositoryInfo: RepositoryInfo,
   selfRunId: number,
-  sourceWorkflowId: number | string,
-  sourceRunId: number,
-  headRepo: string,
-  headBranch: string,
-  sourceEventName: string,
+  triggeringRunInfo: TriggeringRunInfo,
   cancelMode: CancelMode,
   cancelFutureDuplicates: boolean,
   notifyPRCancel: boolean,
@@ -918,34 +1014,24 @@ async function findAndCancelRuns(
   reason: string
 ): Promise<number[]> {
   const statusValues = ['queued', 'in_progress']
-  const mySourceGroup: WorkflowRunSourceGroup = {
-    headBranch,
-    headRepo,
-    eventName: sourceEventName,
-    workflowId: sourceWorkflowId
-  }
   const workflowRuns = await getWorkflowRunsMatchingCriteria(
     repositoryInfo,
     statusValues,
     cancelMode,
-    sourceWorkflowId,
-    sourceRunId,
-    sourceEventName,
-    mySourceGroup
+    triggeringRunInfo
   )
-  const mapOfWorkflowRunsCandidatesToCancel = await filterAndMapWorkflowRunsToGroups(
+  const mapOfWorkflowRunCandidatesCandidatesToCancel = await filterAndMapWorkflowRunsToGroups(
     repositoryInfo,
-    headRepo,
+    triggeringRunInfo,
     cancelMode,
     cancelFutureDuplicates,
-    sourceRunId,
     jobNameRegexps,
     skipEventTypes,
     workflowRuns
   )
   return await cancelTheRunsPerGroup(
     repositoryInfo,
-    mapOfWorkflowRunsCandidatesToCancel,
+    mapOfWorkflowRunCandidatesCandidatesToCancel,
     cancelMode,
     cancelFutureDuplicates,
     notifyPRCancel,
@@ -969,15 +1055,15 @@ function getRequiredEnv(key: string): string {
 }
 
 /**
- * Gets origin of the runId - if this is a workflow run, it returns the information about the source run
+ * Gets source run using  of the runId - if this is a workflow run, it returns the information about the source run
  * @param repositoryInfo - information about the repository used
  * @param runId - run id of the run to check
- * @return information about the triggering workflow
+ * @return information about the triggering run
  */
-async function getOrigin(
+async function getTriggeringRunInfo(
   repositoryInfo: RepositoryInfo,
   runId: number
-): Promise<TriggeringWorkflowInfo> {
+): Promise<TriggeringRunInfo> {
   const reply = await repositoryInfo.octokit.actions.getWorkflowRun({
     owner: repositoryInfo.owner,
     repo: repositoryInfo.repo,
@@ -1001,6 +1087,8 @@ async function getOrigin(
   }
 
   return {
+    workflowId: retrieveWorkflowIdFromUrl(reply.data.workflow_url),
+    runId,
     headRepo: reply.data.head_repository.full_name,
     headBranch: reply.data.head_branch,
     headSha: reply.data.head_sha,
@@ -1015,14 +1103,7 @@ async function getOrigin(
  *
  * @param repositoryInfo - information about the repository used
  * @param selfRunId - number of own run id
- * @param sourceWorkflowId - source workflow id that triggered the workflow
- *        (might be different than self for workflow_run)
- * @param sourceRunId - source run id that triggered the workflow
- *        (might be different than self for workflow_run)
- * @param headRepo - head repository that triggered the workflow (repo from which PR came)
- * @param headBranch - branch of the PR that triggered the workflow (when it is triggered by PR)
- * @param sourceEventName - name of the event that triggered the workflow
- *        (different than self event name for workflow_run)
+ * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
  * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
  * @param notifyPRCancel - whether to notify in PRs about cancelling
@@ -1035,11 +1116,7 @@ async function getOrigin(
 async function performCancelJob(
   repositoryInfo: RepositoryInfo,
   selfRunId: number,
-  sourceWorkflowId: number | string,
-  sourceRunId: number,
-  headRepo: string,
-  headBranch: string,
-  sourceEventName: string,
+  triggeringRunInfo: TriggeringRunInfo,
   cancelMode: CancelMode,
   notifyPRCancel: boolean,
   notifyPRCancelMessage: string,
@@ -1052,9 +1129,11 @@ async function performCancelJob(
     '\n###################################################################################\n'
   )
   core.info(
-    `All parameters: owner: ${repositoryInfo.owner}, repo: ${repositoryInfo.repo}, run id: ${sourceRunId}, ` +
-      `head repo ${headRepo}, headBranch: ${headBranch}, ` +
-      `sourceEventName: ${sourceEventName}, cancelMode: ${cancelMode}, jobNames: ${jobNameRegexps}`
+    `All parameters: owner: ${repositoryInfo.owner}, repo: ${repositoryInfo.repo}, ` +
+      `run id: ${triggeringRunInfo.runId}, ` +
+      `head repo ${triggeringRunInfo.headRepo}, headBranch: ${triggeringRunInfo.headBranch}, ` +
+      `sourceEventName: ${triggeringRunInfo.eventName}, ` +
+      `cancelMode: ${cancelMode}, jobNames: ${jobNameRegexps}`
   )
   core.info(
     '\n###################################################################################\n'
@@ -1062,33 +1141,42 @@ async function performCancelJob(
   let reason = ''
   if (cancelMode === CancelMode.SELF) {
     core.info(
-      `# Cancelling source run: ${sourceRunId} for workflow ${sourceWorkflowId}.`
+      `# Cancelling source run: ${triggeringRunInfo.runId} ` +
+        `for workflow ${triggeringRunInfo.workflowId}.`
     )
     reason = notifyPRCancelMessage
       ? notifyPRCancelMessage
       : `The job has been cancelled by another workflow.`
   } else if (cancelMode === CancelMode.FAILED_JOBS) {
     core.info(
-      `# Cancel all runs for workflow ${sourceWorkflowId} where job names matching ${jobNameRegexps} failed.`
+      `# Cancel all runs for workflow ${triggeringRunInfo.workflowId} ` +
+        `where job names matching ${jobNameRegexps} failed.`
     )
     reason = `It has some failed jobs matching ${jobNameRegexps}.`
   } else if (cancelMode === CancelMode.NAMED_JOBS) {
     core.info(
-      `# Cancel all runs for workflow ${sourceWorkflowId} have job names matching ${jobNameRegexps}.`
+      `# Cancel all runs for workflow ${triggeringRunInfo.workflowId} ` +
+        `have job names matching ${jobNameRegexps}.`
     )
     reason = `It has jobs matching ${jobNameRegexps}.`
   } else if (cancelMode === CancelMode.DUPLICATES) {
     core.info(
-      `# Cancel duplicate runs for workflow ${sourceWorkflowId} for same triggering branch as own run Id.`
+      `# Cancel duplicate runs for workflow ${triggeringRunInfo.workflowId} ` +
+        `for same triggering branch as own run Id.`
     )
-    reason = `It is an earlier duplicate of ${sourceWorkflowId} run.`
+    reason = `It is an earlier duplicate of ${triggeringRunInfo.workflowId} run.`
   } else if (cancelMode === CancelMode.ALL_DUPLICATES) {
     core.info(
-      `# Cancel all duplicates runs started for workflow ${sourceWorkflowId}.`
+      `# Cancel all duplicates runs started for workflow ${triggeringRunInfo.workflowId}.`
     )
-    reason = `It is an earlier duplicate of ${sourceWorkflowId} run.`
+    reason = `It is an earlier duplicate of ${triggeringRunInfo.workflowId} run.`
+  } else if (cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS) {
+    core.info(
+      `# Cancel all duplicate named jobs matching the patterns ${jobNameRegexps}.`
+    )
+    reason = `It is an earlier duplicate of ${triggeringRunInfo.workflowId} run.`
   } else {
-    throw Error(`Wrong cancel mode ${cancelMode}! This should never happen.`)
+    throw Error(`Wrong cancel mode ${cancelMode}! Please correct it.`)
   }
   core.info(
     '\n###################################################################################\n'
@@ -1097,11 +1185,7 @@ async function performCancelJob(
   return await findAndCancelRuns(
     repositoryInfo,
     selfRunId,
-    sourceWorkflowId,
-    sourceRunId,
-    headRepo,
-    headBranch,
-    sourceEventName,
+    triggeringRunInfo,
     cancelMode,
     cancelFutureDuplicates,
     notifyPRCancel,
@@ -1119,31 +1203,31 @@ async function performCancelJob(
  *
  * @param repositoryInfo - information about the repository used
  * @param workflowFileName - optional workflow file name
- * @param sourceRunId - source run id of the workfow
+ * @param runId - run id of the workflow
  * @param selfRunId - self run id
  * @return workflow id that is associate with the workflow we are going to act on.
  */
 async function retrieveWorkflowId(
   repositoryInfo: RepositoryInfo,
   workflowFileName: string | null,
-  sourceRunId: number,
+  runId: number,
   selfRunId: number
 ): Promise<string | number> {
-  let sourceWorkflowId
+  let workflowId
   if (workflowFileName) {
-    sourceWorkflowId = workflowFileName
+    workflowId = workflowFileName
     core.info(
-      `\nFinding runs for another workflow found by ${workflowFileName} name: ${sourceWorkflowId}\n`
+      `\nFinding runs for another workflow found by ${workflowFileName} name: ${workflowId}\n`
     )
   } else {
-    sourceWorkflowId = await getWorkflowId(repositoryInfo, sourceRunId)
-    if (sourceRunId === selfRunId) {
-      core.info(`\nFinding runs for my own workflow ${sourceWorkflowId}\n`)
+    workflowId = await getWorkflowId(repositoryInfo, runId)
+    if (runId === selfRunId) {
+      core.info(`\nFinding runs for my own workflow ${workflowId}\n`)
     } else {
-      core.info(`\nFinding runs for source workflow ${sourceWorkflowId}\n`)
+      core.info(`\nFinding runs for source workflow ${workflowId}\n`)
     }
   }
-  return sourceWorkflowId
+  return workflowId
 }
 /**
  * Sets output but also prints the output value in the logs.
@@ -1161,7 +1245,7 @@ function verboseOutput(name: string, value: string): void {
  * are verified and in case od unexpected combination found, approrpriate error is raised.
  *
  * @param eventName - name of the event to act on
- * @param sourceRunId - run id of the triggering event
+ * @param runId - run id of the triggering event
  * @param selfRunId - our own run id
  * @param cancelMode - cancel mode used
  * @param cancelFutureDuplicates - whether future duplicate cancelling is enabled
@@ -1169,7 +1253,7 @@ function verboseOutput(name: string, value: string): void {
  */
 function performSanityChecks(
   eventName: string,
-  sourceRunId: number,
+  runId: number,
   selfRunId: number,
   cancelMode: CancelMode,
   cancelFutureDuplicates: boolean,
@@ -1177,7 +1261,7 @@ function performSanityChecks(
 ): void {
   if (
     eventName === 'workflow_run' &&
-    sourceRunId === selfRunId &&
+    runId === selfRunId &&
     cancelMode === CancelMode.DUPLICATES
   ) {
     throw Error(
@@ -1195,10 +1279,27 @@ function performSanityChecks(
       CancelMode.ALL_DUPLICATES
     ].includes(cancelMode)
   ) {
-    throw Error(`You cannot specify jobNames on ${cancelMode} cancelMode.`)
+    throw Error(
+      `You cannot specify jobNamesRegexps on ${cancelMode} cancelMode.`
+    )
   }
 
-  if (cancelMode === CancelMode.ALL_DUPLICATES && !cancelFutureDuplicates) {
+  if (
+    jobNameRegexps.length === 0 &&
+    [
+      CancelMode.NAMED_JOBS,
+      CancelMode.FAILED_JOBS,
+      CancelMode.ALL_DUPLICATED_NAMED_JOBS
+    ].includes(cancelMode)
+  ) {
+    throw Error(`You must specify jobNamesRegexps on ${cancelMode} cancelMode.`)
+  }
+
+  if (
+    (cancelMode === CancelMode.ALL_DUPLICATES ||
+      cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS) &&
+    !cancelFutureDuplicates
+  ) {
     throw Error(
       `The  ${cancelMode} cancelMode has to have cancelFutureDuplicates set to true.`
     )
@@ -1209,32 +1310,28 @@ function performSanityChecks(
  * Produces basic outputs for the action. This does not include cancelled workflow run id - those are
  * set after cancelling is done.
  *
- * @param triggeringWorkflowInfo
+ * @param triggeringRunInfo
  */
-function produceBasicOutputs(
-  triggeringWorkflowInfo: TriggeringWorkflowInfo
-): void {
-  verboseOutput('sourceHeadRepo', triggeringWorkflowInfo.headRepo)
-  verboseOutput('sourceHeadBranch', triggeringWorkflowInfo.headBranch)
-  verboseOutput('sourceHeadSha', triggeringWorkflowInfo.headSha)
-  verboseOutput('sourceEvent', triggeringWorkflowInfo.eventName)
+function produceBasicOutputs(triggeringRunInfo: TriggeringRunInfo): void {
+  verboseOutput('sourceHeadRepo', triggeringRunInfo.headRepo)
+  verboseOutput('sourceHeadBranch', triggeringRunInfo.headBranch)
+  verboseOutput('sourceHeadSha', triggeringRunInfo.headSha)
+  verboseOutput('sourceEvent', triggeringRunInfo.eventName)
   verboseOutput(
     'pullRequestNumber',
-    triggeringWorkflowInfo.pullRequest
-      ? triggeringWorkflowInfo.pullRequest.number.toString()
+    triggeringRunInfo.pullRequest
+      ? triggeringRunInfo.pullRequest.number.toString()
       : ''
   )
   verboseOutput(
     'mergeCommitSha',
-    triggeringWorkflowInfo.mergeCommitSha
-      ? triggeringWorkflowInfo.mergeCommitSha
-      : ''
+    triggeringRunInfo.mergeCommitSha ? triggeringRunInfo.mergeCommitSha : ''
   )
   verboseOutput(
     'targetCommitSha',
-    triggeringWorkflowInfo.mergeCommitSha
-      ? triggeringWorkflowInfo.mergeCommitSha
-      : triggeringWorkflowInfo.headSha
+    triggeringRunInfo.mergeCommitSha
+      ? triggeringRunInfo.mergeCommitSha
+      : triggeringRunInfo.headSha
   )
 }
 
@@ -1242,19 +1339,17 @@ function produceBasicOutputs(
  * Notifies the PR that the action has started.
  *
  * @param repositoryInfo information about the repository
- * @param triggeringWorkflowInfo information about the triggering workflow
- * @param sourceRunId run id of the source workflow
+ * @param triggeringRunInfo information about the triggering workflow
  * @param selfRunId self run id
  * @param notifyPRMessageStart whether to notify about the start of the action
  */
 async function notifyActionStart(
   repositoryInfo: RepositoryInfo,
-  triggeringWorkflowInfo: TriggeringWorkflowInfo,
-  sourceRunId: number,
+  triggeringRunInfo: TriggeringRunInfo,
   selfRunId: number,
   notifyPRMessageStart: string
 ): Promise<void> {
-  if (notifyPRMessageStart && triggeringWorkflowInfo.pullRequest) {
+  if (notifyPRMessageStart && triggeringRunInfo.pullRequest) {
     const selfWorkflowRunUrl =
       `https://github.com/${repositoryInfo.owner}/${repositoryInfo.repo}` +
       `/actions/runs/${selfRunId}`
@@ -1262,7 +1357,7 @@ async function notifyActionStart(
       owner: repositoryInfo.owner,
       repo: repositoryInfo.repo,
       // eslint-disable-next-line @typescript-eslint/camelcase
-      issue_number: triggeringWorkflowInfo.pullRequest.number,
+      issue_number: triggeringRunInfo.pullRequest.number,
       body: `${notifyPRMessageStart} [The workflow run](${selfWorkflowRunUrl})`
     })
   }
@@ -1331,13 +1426,15 @@ async function run(): Promise<void> {
       `jobNames: ${jobNameRegexps}`
   )
 
-  const triggeringWorkflowInfo = await getOrigin(repositoryInfo, sourceRunId)
-  produceBasicOutputs(triggeringWorkflowInfo)
+  const triggeringRunInfo = await getTriggeringRunInfo(
+    repositoryInfo,
+    sourceRunId
+  )
+  produceBasicOutputs(triggeringRunInfo)
 
   await notifyActionStart(
     repositoryInfo,
-    triggeringWorkflowInfo,
-    sourceRunId,
+    triggeringRunInfo,
     selfRunId,
     notifyPRMessageStart
   )
@@ -1345,11 +1442,7 @@ async function run(): Promise<void> {
   const cancelledRuns = await performCancelJob(
     repositoryInfo,
     selfRunId,
-    sourceWorkflowId,
-    sourceRunId,
-    triggeringWorkflowInfo.headRepo,
-    triggeringWorkflowInfo.headBranch,
-    triggeringWorkflowInfo.eventName,
+    triggeringRunInfo,
     cancelMode,
     notifyPRCancel,
     notifyPRCancelMessage,
