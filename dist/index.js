@@ -1491,10 +1491,11 @@ var CancelMode;
  * Converts the source of a run object into a string that can be used as map key in maps where we keep
  * arrays of runs per source group
  * @param triggeringRunInfo the object identifying the triggering workflow
+ * @param sourceWorkflowId - workflow id to act on
  * @returns the unique string id for the group
  */
-function getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo) {
-    return (`:${triggeringRunInfo.workflowId}:${triggeringRunInfo.headRepo}` +
+function getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo, sourceWorkflowId) {
+    return (`:${sourceWorkflowId}:${triggeringRunInfo.headRepo}` +
         `:${triggeringRunInfo.headBranch}:${triggeringRunInfo.eventName}`);
 }
 /**
@@ -1513,14 +1514,15 @@ function getCommonGroupIdFromRunItem(runItem) {
  * @param repositoryInfo - information about the repository used
  * @param status - status of the run that we are querying for
  * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param sourceWorkflowId - workflow id to act on
  * @return query parameters merged with the listWorkflowRuns criteria
  */
-function createListRunsQueryRunsSameSource(repositoryInfo, status, triggeringRunInfo) {
+function createListRunsQueryRunsSameSource(repositoryInfo, sourceWorkflowId, status, triggeringRunInfo) {
     const request = {
         owner: repositoryInfo.owner,
         repo: repositoryInfo.repo,
         // eslint-disable-next-line @typescript-eslint/camelcase
-        workflow_id: triggeringRunInfo.workflowId,
+        workflow_id: sourceWorkflowId,
         status,
         branch: triggeringRunInfo.headBranch,
         event: triggeringRunInfo.eventName
@@ -1530,16 +1532,17 @@ function createListRunsQueryRunsSameSource(repositoryInfo, status, triggeringRun
 /**
  * Creates query parameters selecting only specific run Id.
  * @param repositoryInfo - information about the repository used
+ * @param sourceWorkflowId - workflow id to act on
  * @param status - status of the run that we are querying for
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @return query parameters merged with the listWorkflowRuns criteria
  */
-function createListRunsQuerySpecificRunId(repositoryInfo, status, triggeringRunInfo) {
+function createListRunsQuerySpecificRunId(repositoryInfo, sourceWorkflowId, status, triggeringRunInfo) {
     const request = {
         owner: repositoryInfo.owner,
         repo: repositoryInfo.repo,
         // eslint-disable-next-line @typescript-eslint/camelcase
-        workflow_id: triggeringRunInfo.workflowId,
+        workflow_id: sourceWorkflowId,
         status,
         // eslint-disable-next-line @typescript-eslint/camelcase
         run_id: triggeringRunInfo.runId.toString()
@@ -1747,10 +1750,11 @@ function getWorkflowRuns(repositoryInfo, statusValues, cancelMode, createListRun
  * @param runItem item to check
  * @param cancelFutureDuplicates whether future duplicates are being cancelled
  * @param triggeringRunInfo - information about the workflow that triggered the run
+ * @param sourceWorkflowId - workflow id to act on
  * @param mapOfWorkflowRunCandidates - map of the workflow runs to add candidates to
  * @return true if we determine that the run Id should be cancelled
  */
-function checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, triggeringRunInfo, mapOfWorkflowRunCandidates) {
+function checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, triggeringRunInfo, sourceWorkflowId, mapOfWorkflowRunCandidates) {
     const runHeadRepo = runItem.head_repository.full_name;
     if (triggeringRunInfo.headRepo !== undefined &&
         runHeadRepo !== triggeringRunInfo.headRepo) {
@@ -1759,7 +1763,7 @@ function checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, t
     }
     if (cancelFutureDuplicates) {
         core.info(`\nCancel Future Duplicates: Returning run id that might be duplicate or my own run: ${runItem.id}.\n`);
-        addWorkflowRunToMap(getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo), runItem, mapOfWorkflowRunCandidates);
+        addWorkflowRunToMap(getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo, sourceWorkflowId), runItem, mapOfWorkflowRunCandidates);
     }
     else {
         if (runItem.id === triggeringRunInfo.runId) {
@@ -1860,6 +1864,7 @@ function checkCandidateForDuplicateNamedJobs(repositoryInfo, runItem, jobNamesRe
  * Determines whether the run is candidate to be cancelled depending on the mode used and add it to the map
  * of workflow names if it is.
  * @param repositoryInfo - information about the repository used
+ * @param sourceWorkflowId - workflow id to act on
  * @param runItem - run item
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode
@@ -1868,7 +1873,7 @@ function checkCandidateForDuplicateNamedJobs(repositoryInfo, runItem, jobNamesRe
  * @param skipEventTypes - which events should be skipped
  * @param mapOfWorkflowRunCandidates - map of workflow runs to add candidates to
  */
-function checkCandidateForCancelling(repositoryInfo, runItem, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNamesRegexps, skipEventTypes, mapOfWorkflowRunCandidates) {
+function checkCandidateForCancelling(repositoryInfo, sourceWorkflowId, runItem, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNamesRegexps, skipEventTypes, mapOfWorkflowRunCandidates) {
     return __awaiter(this, void 0, void 0, function* () {
         if ('completed' === runItem.status.toString()) {
             core.info(`\nThe run ${runItem.id} is completed. Not adding as candidate to cancel.\n`);
@@ -1894,7 +1899,7 @@ function checkCandidateForCancelling(repositoryInfo, runItem, triggeringRunInfo,
             checkCandidateForCancellingSelf(runItem, triggeringRunInfo, mapOfWorkflowRunCandidates);
         }
         else if (cancelMode === CancelMode.DUPLICATES) {
-            checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, triggeringRunInfo, mapOfWorkflowRunCandidates);
+            checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, triggeringRunInfo, sourceWorkflowId, mapOfWorkflowRunCandidates);
         }
         else if (cancelMode === CancelMode.ALL_DUPLICATES) {
             checkCandidateForAllDuplicates(runItem, triggeringRunInfo, mapOfWorkflowRunCandidates);
@@ -1933,34 +1938,35 @@ function cancelRun(repositoryInfo, runId) {
 /**
  * Returns map of workflow run items matching the criteria specified group by workflow run id
  * @param repositoryInfo - information about the repository used
+ * @param sourceWorkflowId - workflow id to act on
  * @param statusValues - status values we want to check
  * @param cancelMode - cancel mode to use
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @return map of the run items matching grouped by workflow run id
  */
-function getWorkflowRunsMatchingCriteria(repositoryInfo, statusValues, cancelMode, triggeringRunInfo) {
+function getWorkflowRunsMatchingCriteria(repositoryInfo, sourceWorkflowId, statusValues, cancelMode, triggeringRunInfo) {
     return __awaiter(this, void 0, void 0, function* () {
         return yield getWorkflowRuns(repositoryInfo, statusValues, cancelMode, function (status) {
             if (cancelMode === CancelMode.SELF) {
                 core.info(`\nFinding runs for my own run: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-                    `Workflow ID:${triggeringRunInfo.workflowId},` +
+                    `Workflow ID:${sourceWorkflowId},` +
                     `Source Run id: ${triggeringRunInfo.runId}\n`);
-                return createListRunsQuerySpecificRunId(repositoryInfo, status, triggeringRunInfo);
+                return createListRunsQuerySpecificRunId(repositoryInfo, sourceWorkflowId, status, triggeringRunInfo);
             }
             else if (cancelMode === CancelMode.FAILED_JOBS ||
                 cancelMode === CancelMode.NAMED_JOBS ||
                 cancelMode === CancelMode.ALL_DUPLICATES ||
                 cancelMode === CancelMode.ALL_DUPLICATED_NAMED_JOBS) {
                 core.info(`\nFinding runs for all runs: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-                    `Status: ${status} Workflow ID:${triggeringRunInfo.workflowId}\n`);
-                return createListRunsQueryAllRuns(repositoryInfo, status, triggeringRunInfo.workflowId);
+                    `Status: ${status} Workflow ID:${sourceWorkflowId}\n`);
+                return createListRunsQueryAllRuns(repositoryInfo, status, sourceWorkflowId);
             }
             else if (cancelMode === CancelMode.DUPLICATES) {
                 core.info(`\nFinding duplicate runs: Owner: ${repositoryInfo.owner}, Repo: ${repositoryInfo.repo}, ` +
-                    `Status: ${status} Workflow ID:${triggeringRunInfo.workflowId}, ` +
+                    `Status: ${status} Workflow ID:${sourceWorkflowId}, ` +
                     `Head Branch: ${triggeringRunInfo.headBranch},` +
                     `Event name: ${triggeringRunInfo.eventName}\n`);
-                return createListRunsQueryRunsSameSource(repositoryInfo, status, triggeringRunInfo);
+                return createListRunsQueryRunsSameSource(repositoryInfo, sourceWorkflowId, status, triggeringRunInfo);
             }
             else {
                 throw Error(`\nWrong cancel mode ${cancelMode}! Please correct it.\n`);
@@ -2017,6 +2023,7 @@ function findPullRequestForRunItem(repositoryInfo, runItem) {
  * same group are put together in one array - in a map indexed by the source group id.
  *
  * @param repositoryInfo - information about the repository used
+ * @param sourceWorkflowId - workflow id to act on
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode to use
  * @param cancelFutureDuplicates - whether to cancel future duplicates
@@ -2029,7 +2036,7 @@ function findPullRequestForRunItem(repositoryInfo, runItem) {
  *       * source group id (allDuplicates mode)
  *       * matching job name (allDuplicatedMatchingJobNames mode)
  */
-function filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns) {
+function filterAndMapWorkflowRunsToGroups(repositoryInfo, sourceWorkflowId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns) {
     return __awaiter(this, void 0, void 0, function* () {
         const mapOfWorkflowRunCandidates = new Map();
         for (const [key, runItem] of workflowRuns) {
@@ -2039,7 +2046,7 @@ function filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, can
                 core.info(`\nI have self-preservation built in. I refuse to cancel myself :)\n`);
                 continue;
             }
-            yield checkCandidateForCancelling(repositoryInfo, runItem, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, mapOfWorkflowRunCandidates);
+            yield checkCandidateForCancelling(repositoryInfo, sourceWorkflowId, runItem, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, mapOfWorkflowRunCandidates);
         }
         return mapOfWorkflowRunCandidates;
     });
@@ -2150,6 +2157,7 @@ function cancelTheRunsPerGroup(repositoryInfo, mapOfWorkflowRunCandidatesCandida
  * Find and cancels runs based on the criteria chosen.
  * @param repositoryInfo - information about the repository used
  * @param selfRunId - number of own run id
+ * @param sourceWorkflowId - workflow id to act on
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
  * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
@@ -2161,11 +2169,11 @@ function cancelTheRunsPerGroup(repositoryInfo, mapOfWorkflowRunCandidatesCandida
  * @param selfPreservation - whether the run will cancel itself if requested
  * @return array of canceled workflow run ids
  */
-function findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation) {
+function findAndCancelRuns(repositoryInfo, selfRunId, sourceWorkflowId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation) {
     return __awaiter(this, void 0, void 0, function* () {
         const statusValues = ['queued', 'in_progress'];
-        const workflowRuns = yield getWorkflowRunsMatchingCriteria(repositoryInfo, statusValues, cancelMode, triggeringRunInfo);
-        const mapOfWorkflowRunCandidatesCandidatesToCancel = yield filterAndMapWorkflowRunsToGroups(repositoryInfo, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns);
+        const workflowRuns = yield getWorkflowRunsMatchingCriteria(repositoryInfo, sourceWorkflowId, statusValues, cancelMode, triggeringRunInfo);
+        const mapOfWorkflowRunCandidatesCandidatesToCancel = yield filterAndMapWorkflowRunsToGroups(repositoryInfo, sourceWorkflowId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, jobNameRegexps, skipEventTypes, selfRunId, selfPreservation, workflowRuns);
         return yield cancelTheRunsPerGroup(repositoryInfo, mapOfWorkflowRunCandidatesCandidatesToCancel, cancelMode, cancelFutureDuplicates, notifyPRCancel, selfRunId, reason);
     });
 }
@@ -2221,6 +2229,7 @@ function getTriggeringRunInfo(repositoryInfo, runId) {
  *
  * @param repositoryInfo - information about the repository used
  * @param selfRunId - number of own run id
+ * @param sourceWorkflowId - id of the workflow to act on
  * @param triggeringRunInfo - information about the workflow that triggered the run
  * @param cancelMode - cancel mode used
  * @param notifyPRCancel - whether to notify in PRs about cancelling
@@ -2232,11 +2241,11 @@ function getTriggeringRunInfo(repositoryInfo, runId) {
  * @param cancelFutureDuplicates - whether to cancel future duplicates for duplicate cancelling
  * @param selfPreservation - whether the run will cancel itself if requested
  */
-function performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation) {
+function performCancelJob(repositoryInfo, selfRunId, sourceWorkflowId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation) {
     return __awaiter(this, void 0, void 0, function* () {
         core.info('\n###################################################################################\n');
         core.info(`All parameters: owner: ${repositoryInfo.owner}, repo: ${repositoryInfo.repo}, ` +
-            `run id: ${triggeringRunInfo.runId}, ` +
+            `run id: ${triggeringRunInfo.runId}, Source workflow id: ${sourceWorkflowId}, ` +
             `head repo ${triggeringRunInfo.headRepo}, headBranch: ${triggeringRunInfo.headBranch}, ` +
             `sourceEventName: ${triggeringRunInfo.eventName}, ` +
             `cancelMode: ${cancelMode}, jobNames: ${jobNameRegexps}`);
@@ -2276,7 +2285,7 @@ function performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMo
             throw Error(`Wrong cancel mode ${cancelMode}! Please correct it.`);
         }
         core.info('\n###################################################################################\n');
-        return yield findAndCancelRuns(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation);
+        return yield findAndCancelRuns(repositoryInfo, selfRunId, sourceWorkflowId, triggeringRunInfo, cancelMode, cancelFutureDuplicates, notifyPRCancel, notifyPRMessageStart, jobNameRegexps, skipEventTypes, reason, selfPreservation);
     });
 }
 /**
@@ -2445,7 +2454,7 @@ function run() {
         const triggeringRunInfo = yield getTriggeringRunInfo(repositoryInfo, sourceRunId);
         produceBasicOutputs(triggeringRunInfo);
         yield notifyActionStart(repositoryInfo, triggeringRunInfo, selfRunId, notifyPRMessageStart);
-        const cancelledRuns = yield performCancelJob(repositoryInfo, selfRunId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation);
+        const cancelledRuns = yield performCancelJob(repositoryInfo, selfRunId, sourceWorkflowId, triggeringRunInfo, cancelMode, notifyPRCancel, notifyPRCancelMessage, notifyPRMessageStart, jobNameRegexps, skipEventTypes, cancelFutureDuplicates, selfPreservation);
         verboseOutput('cancelledRuns', JSON.stringify(cancelledRuns));
     });
 }
