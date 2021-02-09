@@ -11,6 +11,7 @@
 
 - [Context and motivation](#context-and-motivation)
 - [Usage](#usage)
+- [The Action "target" workflow](#the-action-target-workflow)
 - [Inputs and outputs](#inputs-and-outputs)
   - [Inputs](#inputs)
   - [Outputs](#outputs)
@@ -31,6 +32,7 @@
     - [Cancel "self" workflow run](#cancel-self-workflow-run)
     - [Fail-fast workflow runs with failed jobs](#fail-fast-workflow-runs-with-failed-jobs)
     - [Cancel all runs with named jobs](#cancel-all-runs-with-named-jobs)
+  - [Tackling the high queue strain situation](#tackling-the-high-queue-strain-situation)
   - [Development environment](#development-environment)
   - [License](#license)
 
@@ -100,6 +102,58 @@ If you want a comprehensive solution, you should use the action as follows:
    The `workflow_run` should be responsible for all canceling actions. The examples below show
    the possible ways the action can be utilized.
 
+3) If you have "high queue strain" situation - i.e. you often have many workflows queued due to limits
+   of teh GitHub Actions queue, you should consider using `allDuplicates` cancelling mode because otherwise,
+   the cancel itself might get queued until it is already too late to cancel the job. The `allDuplicates`
+   mode has been  designed to tackle this kind of situation where the "canceling" workflows are also queued,
+   in which case the cancel actions are far more aggressive in cancelling the workflow runs - including
+   the workflow runs that were started after the cancel action run. More about it in the
+   [Tackling the high queue strain situation](#tackling-the-high-queue-strain-situation)
+
+# The Action "target" workflow
+
+The Action always acts on single "target" workflow. This means that it selects candidates to cancelling
+(depending on the cabcelling mode) from all workflow runs that belong to a particular workflow.
+
+This "workflow" to act on can be chosen in several ways:
+
+1) By default, the action acts on workflow runs the action belongs to
+2) When you want to enable canceling for Pull Requests from forks, the action should be run in a
+   `workflow_run` type of event. In such case there are two workflows "the source" (for example pull_request) that
+   was the original one and "the target workflow" triggered by the source one (this is the workflow that
+   the cancel action should be part of). In such `workflow_run` type of event you should specify
+   "${{ github.event.workflow_run.id }}" as `sourceRunId` - then the action will act on the "source"
+   workflow instead of the default "target" one.
+3) You can explicitly specify the `workflowFileName` parameter to make the action works on specified workflow.
+
+Again - the action always acts on a single workflow, so if you want to specify a single job that should cancel
+few different workflows, you need to copy that step as many times you need and set different
+`workflowFileName` for every step. This is quite a bit repetitive, but this way you can see logs from
+canceling operations from each workflow separately, and you can reason about it, at the same time having
+multiple steps in the same jobs allows to optimize overhead of machine starting per job as those
+actions are usually very quick.
+
+```yaml
+  cancel-multiple-workflow-runs:
+    name: "Cancel the self CI workflow run"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Cancel workflow 1"
+        uses: potiuk/cancel-workflow-runs@master
+        with:
+          cancelMode: allDuplicates
+          cancelFutureDuplicates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          workflowFileName: workflow_1.yml
+      - name: "Cancel workflow 2"
+        uses: potiuk/cancel-workflow-runs@master
+        with:
+          cancelMode: allDuplicates
+          cancelFutureDuplicates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          workflowFileName: workflow_2.yml
+```
+
 # Inputs and outputs
 
 ## Inputs
@@ -107,7 +161,7 @@ If you want a comprehensive solution, you should use the action as follows:
 | Input                    | Required | Default      | Comment                                                                                                                                                                                                          |
 |--------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `token`                  | yes      |              | The github token passed from `${{ secrets.GITHUB_TOKEN }}`                                                                                                                                                       |
-| `cancelMode`             | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `self`, `failedJobs`, `namedJobs`                                                                                                             |
+| `cancelMode`             | no       | `duplicates` | The mode to run cancel on. The available options are `duplicates`, `allDuplicates`, `self`, `failedJobs`, `namedJobs`                                                                                            |
 | `cancelFutureDuplicates` | no       | true         | In case of duplicate canceling, cancel also future duplicates leaving only the "freshest" running job and not all the future jobs. By default it is set to true.                                                 |
 | `sourceRunId`            | no       |              | Useful only in `workflow_run` triggered events. It should be set to the id of the workflow triggering the run `${{ github.event.workflow_run.id }}`  in case cancel operation should cancel the source workflow. |
 | `notifyPRCancel`         | no       |              | Boolean. If set to true, it notifies the cancelled PRs with a comment containing reason why they are being cancelled.                                                                                            |
@@ -124,7 +178,7 @@ The job cancel modes work as follows:
 | Cancel Mode              | No `sourceRunId` specified                                                   | The `sourceRunId` set to `${{ github.event.workflow_run.id }}`                      |
 |--------------------------|------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
 | `duplicates`             | Cancels duplicate runs from the same repo/branch as current run.             | Cancels duplicate runs for the same repo/branch as the source run.                  |
-| `allDuplicates`          | Cancels duplicate runs from all running workflows.                           | Cancels duplicate runs from all running workflows.                                  |
+| `allDuplicates`          | Cancels duplicate runs from all running workflow runs of specified workflow. | Cancels duplicate runs from all running workflow runs of the source workflow.       |
 | `self`                   | Cancels self run.                                                            | Cancel the `sourceRunId` run.                                                       |
 | `failedJobs`             | Cancels all runs of own workflow that have matching jobs that failed.        | Cancels all runs of the `sourceRunId` workflow that have matching jobs that failed. |
 | `namedJobs`              | Cancels all runs of own workflow that have matching jobs.                    | Cancels all runs of the `sourceRunId` workflow that have matching jobs.             |
@@ -718,6 +772,116 @@ jobs:
           jobNameRegexps: '["^Static checks$", "^Build docs$", "^Build prod image.*"]'
           notifyPRCancel: true
 ```
+
+## Tackling the high queue strain situation
+
+Sometimes your project is in a situation where you have high strain on the queue in GitHub Actions.
+All GitHub Actions queues are limited and when you have many, long-running workflows triggered by
+many PRs, you can get in the situation, where the "cancel" workflows are queued themselves. This is where
+`allDuplicates` mode of cancellation becomes handy,
+
+
+Imagine, You have a number of people submitting `PR1`, `PR2` from their forks, and a committer pushing branch
+`branch-A` directly to your repository.  Imagine that some of those people pushed several commits in
+quick succession  for all of those.
+
+This usually happen when you realized that there is one more change needed or when you
+iteratively work on your PR. Usually it is either a `--force-push` commit replacing the previous ones
+or "--fixup commit". It works the same in both cases but this is a "natural" way people work.
+For example for many people it is far easier to review whole extent of your change in GitHub
+(they are used to doing PR reviews there). They push the change as PR, review it there themselves
+and realize they need one more line to be removed (and they add --fixup and push again).
+
+Coming back to my example. Imagine you have high strain situation. All your PRs generated 10 or so
+workflows (that's how Pulsar works - produces many workflows per PR). But let's assume we have two
+"real" workflows "w1" and "w2" and the "cancel" workflow I added "c". So, initially all of the workflows
+generated are in "Pending" state. assume each of the PRs has been pushed twice -
+first `Commit 1` (C1) and then fixup `Commit 2` (C2). So all C1s are "older" duplicates of C2 that
+should be cancelled as soon as possible (we know newer version is coming).
+
+|          | w1-C1   | w2-C1   | c-C1    | w1-C2   | w2-C2   | c-C2    |
+|----------|---------|---------|---------|---------|---------|---------|
+| PR1      | pending | pending | pending | pending | pending | pending |
+| PR2      | pending | pending | pending | pending | pending | pending |
+| branch-A | pending | pending | pending | pending | pending | pending |
+
+Then imagine that PR1 "standard" worflows started to run for C1. So they change state to 'running'
+
+|          | w1-C1   | w2-C1   | c-C1    | w1-C2   | w2-C2   | c-C2    |
+|----------|---------|---------|---------|---------|---------|---------|
+| PR1      | running | running | pending | pending | pending | pending |
+| PR2      | pending | pending | pending | pending | pending | pending |
+| branch-A | pending | pending | pending | pending | pending | pending |
+
+So far so good. Then the "cancel workflow"  starts running for C1 commit in PR1.
+
+|          | w1-C1   | w2-C1   | c-C1    | w1-C2   | w2-C2   | c-C2    |
+|----------|---------|---------|---------|---------|---------|---------|
+| PR1      | running | running | running | pending | pending | pending |
+| PR2      | pending | pending | pending | pending | pending | pending |
+| branch-A | pending | pending | pending | pending | pending | pending |
+
+The "cancel" workflow with `allDuplicates` mode is "aggressive". It will look for ANY duplicates in
+ANY PRs/Branches (including the Pending ones) and cancels them. So what happens next it will set all
+C1 runs to cancelled state (no matter if they were Pending or running):
+
+
+|          | w1-C1   | w2-C1   | c-C1    | w1-C2   | w2-C2   | c-C2    |
+|----------|---------|---------|---------|---------|---------|---------|
+| PR1      | cancelling | cancelling | complete | pending | pending | pending |
+| PR2      | cancelling | cancelling | pending | pending | pending | pending |
+| branch-A | cancelling | cancelling | pending | pending | pending | pending |
+
+Those runs will be quickly canceled and job slots from the "Running" ones will be freed for next runs so
+likely, some of the Pending C2 runs from PR1 will be quickly "Running:
+
+|          | c-C1     | w1-C2   | w2-C2   | c-C2    |
+|----------|----------|---------|---------|---------|
+| PR1      | complete | running | running | pending |
+| PR2      | pending  | pending | pending | pending |
+| branch-A | pending  | pending | pending | pending |
+
+Now - the "cancel" workflows are not cancelled themselves. They will continue running, but they are
+quick usually and any "cancel workflow" run next will see there are no duplicates and will complete
+quickly leaving the "slot" for "real" workflows of the latest commits (C2) to run - hopefully more
+slots are available then, and your C2 workflows start running after that:
+
+|          | c-C1     | w1-C2    | w2-C2    | c-C2     |
+|----------|----------|----------|----------|----------|
+| PR1      | complete | complete | complete | complete |
+| PR2      | complete | running  | running  | pending  |
+| branch-A | pending  | pending  | pending  | pending  |
+
+Hower if the committer again pushes THIRD commit C3 to branch-A in the meantime, the (so far pending)
+cancel workflows will again prove to be useful. Let's say PR2's "cancel workflow" for C2 runs after
+the new commit has been added by the commiyter:
+
+|          | c-C1     | w1-C2    | w2-C2    | c-C2     | w1-C3   | w2-C3   | c-C3    |
+|----------|----------|----------|----------|----------|---------|---------|---------|
+| PR1      | complete | complete | complete | complete |         |         |         |
+| PR2      | complete | complete | running  | running  |         |         |         |
+| branch-A | pending  | pending  | pending  | pending  | pending | pending | pending |
+
+The PR2's c-C2 workflow (or even branch-As, c-C1 workflow if the PR2's one managed to run already)
+will find that there is a duplicate in `branch-A` and it will cancel those:
+
+|          | c-C1     | w1-C2    | w2-C2    | c-C2     | w1-C3   | w2-C3   | c-C3    |
+|----------|----------|----------|----------|----------|---------|---------|---------|
+| PR1      | complete | complete | complete | complete |         |         |         |
+| PR2      | complete | complete | complete  | complete  |         |         |         |
+| branch-A | complete  | cancelled  | cancelled  | running  | running | running | pending |
+
+Again the remaining "cancel" workflow (branch A's c-C2 an c-C3) complete quickly and do nothing as
+there are no duplicates, freeing the slot for "regular" workflows:
+
+|          | c-C1     | w1-C2    | w2-C2    | c-C2     | w1-C3   | w2-C3   | c-C3    |
+|----------|----------|----------|----------|----------|---------|---------|---------|
+| PR1      | complete | complete | complete | complete |         |         |         |
+| PR2      | complete | complete | complete  | complete  |         |         |         |
+| branch-A | complete  | cancelled  | cancelled  | complete  | running | running | complete |
+
+Effectively what we get is that the "duplicates" will be cancelled frequently enough (as often as
+ANY "cancel" workflow from  ANY commit from ANY branch manages to get into "running" state)
 
 
 ## Development environment
