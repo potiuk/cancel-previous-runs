@@ -1505,7 +1505,9 @@ function getCommonGroupIdFromTriggeringRunInfo(triggeringRunInfo, sourceWorkflow
  * @returns the unique string id for the group
  */
 function getCommonGroupIdFromRunItem(runItem) {
-    return `:${retrieveWorkflowIdFromUrl(runItem.workflow_url)}:${runItem.head_repository.full_name}:${runItem.head_branch}:${runItem.event}`;
+    return `:${retrieveWorkflowIdFromUrl(runItem.workflow_url)}:${runItem.head_repository !== null
+        ? runItem.head_repository.full_name
+        : 'UNKNOWN_REPO'}:${runItem.head_branch}:${runItem.event}`;
 }
 /**
  * Creates query parameters selecting all runs that share the same source group as we have. This can
@@ -1755,6 +1757,10 @@ function getWorkflowRuns(repositoryInfo, statusValues, cancelMode, createListRun
  * @return true if we determine that the run Id should be cancelled
  */
 function checkCandidateForCancellingDuplicate(runItem, cancelFutureDuplicates, triggeringRunInfo, sourceWorkflowId, mapOfWorkflowRunCandidates) {
+    if (runItem.head_repository === null) {
+        core.warning(`\nThe run number: ${runItem.run_number} is weird. It's 'head_repository' is null.\n`);
+        return;
+    }
     const runHeadRepo = runItem.head_repository.full_name;
     if (triggeringRunInfo.headRepo !== undefined &&
         runHeadRepo !== triggeringRunInfo.headRepo) {
@@ -2010,6 +2016,10 @@ function findPullRequest(repositoryInfo, headRepo, headBranch, headSha) {
  */
 function findPullRequestForRunItem(repositoryInfo, runItem) {
     return __awaiter(this, void 0, void 0, function* () {
+        if (runItem.head_repository === null) {
+            core.warning(`\nThe run number: ${runItem.run_number} is weird. It's 'head_repository' is null.\n`);
+            return undefined;
+        }
         const pullRequest = yield findPullRequest(repositoryInfo, runItem.head_repository.owner.login, runItem.head_branch, runItem.head_sha);
         if (pullRequest) {
             return pullRequest.number;
@@ -2205,6 +2215,19 @@ function getTriggeringRunInfo(repositoryInfo, runId) {
             run_id: runId
         });
         const sourceRun = reply.data;
+        if (sourceRun.head_repository === null) {
+            core.warning(`\nThe run number: ${sourceRun.run_number} is weird. It's 'head_repository' is null.\n`);
+            return {
+                workflowId: retrieveWorkflowIdFromUrl(reply.data.workflow_url),
+                runId,
+                headRepo: 'UNKNOWN_REPO',
+                headBranch: reply.data.head_branch,
+                headSha: reply.data.head_sha,
+                mergeCommitSha: null,
+                pullRequest: null,
+                eventName: reply.data.event
+            };
+        }
         core.info(`Source workflow: Head repo: ${sourceRun.head_repository.full_name}, ` +
             `Head branch: ${sourceRun.head_branch} ` +
             `Event: ${sourceRun.event}, Head sha: ${sourceRun.head_sha}, url: ${sourceRun.url}`);
