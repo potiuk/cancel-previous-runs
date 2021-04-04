@@ -76,7 +76,9 @@ function getCommonGroupIdFromRunItem(
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem
 ): string {
   return `:${retrieveWorkflowIdFromUrl(runItem.workflow_url)}:${
-    runItem.head_repository.full_name
+    runItem.head_repository !== null
+      ? runItem.head_repository.full_name
+      : 'UNKNOWN_REPO'
   }:${runItem.head_branch}:${runItem.event}`
 }
 
@@ -373,6 +375,12 @@ function checkCandidateForCancellingDuplicate(
     rest.ActionsListWorkflowRunsResponseWorkflowRunsItem[]
   >
 ): void {
+  if (runItem.head_repository === null) {
+    core.warning(
+      `\nThe run number: ${runItem.run_number} is weird. It's 'head_repository' is null.\n`
+    )
+    return
+  }
   const runHeadRepo = runItem.head_repository.full_name
   if (
     triggeringRunInfo.headRepo !== undefined &&
@@ -793,6 +801,12 @@ async function findPullRequestForRunItem(
   repositoryInfo: RepositoryInfo,
   runItem: rest.ActionsListWorkflowRunsResponseWorkflowRunsItem
 ): Promise<number | undefined> {
+  if (runItem.head_repository === null) {
+    core.warning(
+      `\nThe run number: ${runItem.run_number} is weird. It's 'head_repository' is null.\n`
+    )
+    return undefined
+  }
   const pullRequest = await findPullRequest(
     repositoryInfo,
     runItem.head_repository.owner.login,
@@ -1118,6 +1132,21 @@ async function getTriggeringRunInfo(
     run_id: runId
   })
   const sourceRun = reply.data
+  if (sourceRun.head_repository === null) {
+    core.warning(
+      `\nThe run number: ${sourceRun.run_number} is weird. It's 'head_repository' is null.\n`
+    )
+    return {
+      workflowId: retrieveWorkflowIdFromUrl(reply.data.workflow_url),
+      runId,
+      headRepo: 'UNKNOWN_REPO',
+      headBranch: reply.data.head_branch,
+      headSha: reply.data.head_sha,
+      mergeCommitSha: null,
+      pullRequest: null,
+      eventName: reply.data.event
+    }
+  }
   core.info(
     `Source workflow: Head repo: ${sourceRun.head_repository.full_name}, ` +
       `Head branch: ${sourceRun.head_branch} ` +
