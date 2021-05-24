@@ -2,8 +2,26 @@
 <img alt="cancel-workflow-runs status"
     src="https://github.com/potiuk/cancel-workflow-runs/workflows/Test%20the%20build/badge.svg"></a>
 
-# Cancel Workflow Runs action
+# Deprecation notice
 
+Github Recently (19th of April) introduced a new feature "concurrency" which
+adds the possibility of cancelling duplicate workflows in a much "nicer" way
+than the "cancel-workflow-action":
+
+[Announcement here](https://github.blog/changelog/2021-04-19-github-actions-limit-workflow-run-or-job-concurrency/)
+
+It is MUCH easier to use and we are trying it out in Airflow - seems it
+provides solution for most of the features of my action (one feature it does
+not provide is workflow "fail-fast" in case of failure of some jobs (but this
+was an edge case, likely not used by anyone except Apache Airflow as it require
+quite some complex setup).
+
+[Documenation of concurrency feature here](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#concurrency)
+
+The action is deprecated (and happily - it was just making up
+lack of the feature in Github Actions).
+
+# Cancel Workflow Runs action
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
